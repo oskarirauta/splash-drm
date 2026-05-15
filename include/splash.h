@@ -18,7 +18,7 @@
 #include <sys/types.h>
 #include <sys/select.h>
 #include <sys/time.h>
-#include <linux/drm_mode.h>
+#include <libdrm/drm_mode.h>
 
 /* ========================================================================
  * Build Configuration
@@ -97,16 +97,6 @@ static inline void blend_pixel(uint32_t *dst, uint32_t src) {
  * ======================================================================== */
 
 typedef struct {
-    uint32_t clock;
-    uint16_t hdisplay, hsync_start, hsync_end, htotal, hskew;
-    uint16_t vdisplay, vsync_start, vsync_end, vtotal, vscan;
-    uint32_t vrefresh;
-    uint32_t flags;
-    uint32_t type;
-    char name[32];
-} drm_mode_info_t;
-
-typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t pitch;
@@ -116,21 +106,22 @@ typedef struct {
     uint8_t *map;
 } drm_buffer_t;
 
+/* Nimetty uudelleen välttääkseen törmäyksen libdrm:n drm_context_t:n kanssa */
 typedef struct {
     int fd;
     uint32_t conn_id;
     uint32_t crtc_id;
-    drm_mode_info_t mode;
+    drmModeModeInfo mode;
     drm_buffer_t buf[2];
     int front_buf;
     struct {
         uint32_t crtc_id;
         uint32_t buffer_id;
         uint32_t x, y;
-        drm_mode_info_t mode;
+        drmModeModeInfo mode;
         int mode_valid;
     } saved_crtc;
-} drm_context_t;
+} splash_drm_t;
 
 /* ========================================================================
  * Image Type
@@ -218,7 +209,7 @@ typedef struct {
  * ======================================================================== */
 
 typedef struct {
-    drm_context_t drm;
+    splash_drm_t drm;
     image_t bg_image;
     int bg_loaded;
     int bg_scale_mode;
@@ -238,9 +229,9 @@ typedef struct {
  * ======================================================================== */
 
 /* drm.c */
-int drm_init(drm_context_t *ctx, const char *device);
-void drm_cleanup(drm_context_t *ctx);
-void drm_flip(drm_context_t *ctx);
+int drm_init(splash_drm_t *ctx, const char *device);
+void drm_cleanup(splash_drm_t *ctx);
+void drm_flip(splash_drm_t *ctx);
 
 /* render.c */
 void render_frame(splash_state_t *st);

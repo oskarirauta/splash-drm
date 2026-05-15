@@ -260,13 +260,13 @@ static void _drmModeFreeCrtc(_drmModeCrtc *ptr) {
 static int _drmModeSetCrtc(int fd, uint32_t crtcId, uint32_t bufferId,
                            uint32_t x, uint32_t y, uint32_t *connectors, int count,
                            _drmModeModeInfo *mode) {
-    struct drm_mode_crtc_set crtc = {0};  /* ← Käytä drm_mode_crtc_set */
+    struct drm_mode_crtc crtc = {0};
     crtc.crtc_id = crtcId;
-    crtc.fb_id = bufferId;                /* ← fb_id, ei buffer_id */
+    crtc.fb_id = bufferId;
     crtc.x = x;
     crtc.y = y;
     crtc.set_connectors_ptr = (uint64_t)(uintptr_t)connectors;
-    crtc.count_connectors = count;        /* ← Nyt tämä on olemassa! */
+    crtc.count_connectors = count;
     if (mode) {
         memcpy(&crtc.mode, mode, sizeof(struct drm_mode_modeinfo));
         crtc.mode_valid = 1;
@@ -438,7 +438,7 @@ static int drm_open_device(const char *path) {
     return fd;
 }
 
-int drm_init(drm_context_t *ctx, const char *device) {
+int drm_init(splash_context_t *ctx, const char *device) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->fd = drm_open_device(device);
     if (ctx->fd < 0) return -1;
@@ -482,7 +482,7 @@ int drm_init(drm_context_t *ctx, const char *device) {
     return 0;
 }
 
-void drm_cleanup(drm_context_t *ctx) {
+void drm_cleanup(splash_context_t *ctx) {
     if (ctx->saved_crtc.mode_valid) {
         uint32_t conn = ctx->conn_id;
         _drmModeSetCrtc(ctx->fd, ctx->saved_crtc.crtc_id, ctx->saved_crtc.buffer_id,
@@ -497,7 +497,7 @@ void drm_cleanup(drm_context_t *ctx) {
     }
 }
 
-void drm_flip(drm_context_t *ctx) {
+void drm_flip(splash_context_t *ctx) {
     int next = ctx->front_buf ^ 1;
     uint32_t conn = ctx->conn_id;
     _drmModeSetCrtc(ctx->fd, ctx->crtc_id, ctx->buf[next].fb_id, 0, 0, &conn, 1,
