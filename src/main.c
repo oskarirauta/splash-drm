@@ -53,6 +53,7 @@ static void print_usage(const char *prog) {
  * ======================================================================== */
 
 static int parse_args(splash_state_t *st, int argc, char **argv, int *opt_idx) {
+    (void)opt_idx;
     for (int i = 4; i < argc; i++) {
         if (strcmp(argv[i], "-bg") == 0 && i + 1 < argc) {
             if (load_image(argv[++i], &st->bg_image) == 0) {

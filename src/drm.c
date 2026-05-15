@@ -228,24 +228,28 @@ static void _drmModeFreeEncoder(_drmModeEncoder *ptr) {
 static _drmModeCrtc* _drmModeGetCrtc(int fd, uint32_t crtc_id) {
     struct drm_mode_crtc crtc = {0};
     crtc.crtc_id = crtc_id;
-    
+
     if (_drm_ioctl(fd, DRM_IOCTL_MODE_GETCRTC, &crtc) < 0)
         return NULL;
-    
+
     _drmModeCrtc *c = calloc(1, sizeof(_drmModeCrtc));
     if (!c) return NULL;
-    
+
     c->crtc_id = crtc.crtc_id;
     c->x = crtc.x;
     c->y = crtc.y;
-    c->width = crtc.width;
-    c->height = crtc.height;
+    /* c->width ja c->height EIVÄT ole kernelin rakenteessa! */
+    /* Jos tarvitset ne, hae ne mode-rakenteesta: */
+    if (crtc.mode_valid) {
+        c->width = crtc.mode.hdisplay;   /* ← Näin */
+        c->height = crtc.mode.vdisplay;  /* ← Näin */
+    }
     c->mode_valid = crtc.mode_valid;
-    c->buffer_id = crtc.fb_id;
+    c->buffer_id = crtc.fb_id;           /* ← fb_id, ei "buffer_id" */
     if (crtc.mode_valid)
         memcpy(&c->mode, &crtc.mode, sizeof(_drmModeModeInfo));
     c->gamma_size = crtc.gamma_size;
-    
+
     return c;
 }
 
@@ -254,15 +258,15 @@ static void _drmModeFreeCrtc(_drmModeCrtc *ptr) {
 }
 
 static int _drmModeSetCrtc(int fd, uint32_t crtcId, uint32_t bufferId,
-                            uint32_t x, uint32_t y, uint32_t *connectors, int count,
-                            _drmModeModeInfo *mode) {
-    struct drm_mode_crtc_set crtc = {0};
+                           uint32_t x, uint32_t y, uint32_t *connectors, int count,
+                           _drmModeModeInfo *mode) {
+    struct drm_mode_crtc_set crtc = {0};  /* ← Käytä drm_mode_crtc_set */
     crtc.crtc_id = crtcId;
-    crtc.fb_id = bufferId;
+    crtc.fb_id = bufferId;                /* ← fb_id, ei buffer_id */
     crtc.x = x;
     crtc.y = y;
     crtc.set_connectors_ptr = (uint64_t)(uintptr_t)connectors;
-    crtc.count_connectors = count;
+    crtc.count_connectors = count;        /* ← Nyt tämä on olemassa! */
     if (mode) {
         memcpy(&crtc.mode, mode, sizeof(struct drm_mode_modeinfo));
         crtc.mode_valid = 1;

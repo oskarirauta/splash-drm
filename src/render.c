@@ -5,29 +5,8 @@
  * All drawing operations work directly on DRM dumb buffers.
  */
 
+#include <math.h>
 #include "splash.h"
-
-/* ========================================================================
- * Pixel Operations
- * ======================================================================== */
-
-static inline void blend_pixel(uint32_t *dst, uint32_t src) {
-    uint8_t sa = src >> 24;
-    if (sa == 0) return;
-    if (sa == 255) { *dst = src; return; }
-    
-    uint32_t d = *dst;
-    uint8_t da = d >> 24;
-    uint8_t sr = (src >> 16) & 0xFF, sg = (src >> 8) & 0xFF, sb = src & 0xFF;
-    uint8_t dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
-    
-    uint16_t a = sa + ((da * (255 - sa)) >> 8);
-    uint16_t r = ((sr * sa) + (dr * (255 - sa))) >> 8;
-    uint16_t g = ((sg * sa) + (dg * (255 - sa))) >> 8;
-    uint16_t b = ((sb * sa) + (db * (255 - sa))) >> 8;
-    
-    *dst = argb((uint8_t)a, (uint8_t)r, (uint8_t)g, (uint8_t)b);
-}
 
 /* ========================================================================
  * Rectangle Drawing
@@ -161,12 +140,17 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
     
     /* Text overlay */
     char text[256];
+    int n;
     if (pb->inner[0]) {
-        snprintf(text, sizeof(text), "%s%s%s %.0f%%", 
-                 pb->prefix, pb->inner, pb->suffix, pb->value);
+        n = snprintf(text, sizeof(text), "%s%s%s %.0f%%",
+        pb->prefix, pb->inner, pb->suffix, pb->value);
     } else {
-        snprintf(text, sizeof(text), "%s%.0f%%%s", 
+        n = snprintf(text, sizeof(text), "%s%.0f%%%s",
                  pb->prefix, pb->value, pb->suffix);
+    }
+    if (n >= (int)sizeof(text)) {
+        /* Teksti katkaistiin - käytä pelkkää prosenttia */
+        snprintf(text, sizeof(text), "%.0f%%", pb->value);
     }
     
     int tw = text_width(text);
@@ -182,9 +166,9 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
         .align = ALIGN_LEFT,
         .color = pb->text_color
     };
-    strncpy(te.text, text, 255);
-    draw_text_element(buf, &te);
-}
+    /* Käytä text suoraan - se on jo nollaterminoitu */
+    snprintf(te.text, sizeof(te.text), "%s", text);
+    draw_text_element(buf, &te);}
 
 /* ========================================================================
  * Main Frame Rendering

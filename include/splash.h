@@ -1,63 +1,57 @@
 /*
  * splash.h - Main header for splash-drm bootsplash daemon
- * 
- * This is the central header that defines all types, constants,
- * and function prototypes used across the project.
  */
 
 #ifndef SPLASH_H
 #define SPLASH_H
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdint.h>
-#include <stdbool.h>
-#include <errno.h>
-#include <fcntl.h>
+#include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/select.h>
 #include <sys/time.h>
-#include <math.h>
-#include <linux/drm.h>
 #include <linux/drm_mode.h>
 
 /* ========================================================================
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION     "2.0.0"
-#define MAX_TEXT_ELEMENTS  16
+#define SPLASH_VERSION "2.0.0"
+#define MAX_TEXT_ELEMENTS 16
 #define MAX_IMAGE_OVERLAYS 16
-#define MAX_PROGRESS_BARS   8
-#define MAX_RECTANGLES     16
-#define CMD_MAX_LEN       4096
-#define MAX_FONT_SIZE      72
-#define PIPE_TIMEOUT_MS   100
-#define RENDER_FPS         30
+#define MAX_PROGRESS_BARS 8
+#define MAX_RECTANGLES 16
+#define CMD_MAX_LEN 4096
+#define MAX_FONT_SIZE 72
+#define PIPE_TIMEOUT_MS 100
+#define RENDER_FPS 30
 
 /* ========================================================================
  * Image Scaling Modes
  * ======================================================================== */
 
-#define SCALE_COVER   0
+#define SCALE_COVER 0
 #define SCALE_CONTAIN 1
 #define SCALE_STRETCH 2
-#define SCALE_NONE    3
+#define SCALE_NONE 3
 
 /* ========================================================================
  * Alignment Constants
  * ======================================================================== */
 
-#define ALIGN_LEFT    0
-#define ALIGN_CENTER  1
-#define ALIGN_RIGHT   2
+#define ALIGN_LEFT 0
+#define ALIGN_CENTER 1
+#define ALIGN_RIGHT 2
 
-#define VALIGN_TOP    0
+#define VALIGN_TOP 0
 #define VALIGN_MIDDLE 1
 #define VALIGN_BOTTOM 2
 
@@ -77,7 +71,29 @@ static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
 uint32_t parse_color(const char *str);
 
 /* ========================================================================
- * DRM/KMS Types (minimal reimplementation of libdrm types)
+ * Pixel Blending (used by both render.c and font.c)
+ * ======================================================================== */
+
+static inline void blend_pixel(uint32_t *dst, uint32_t src) {
+    uint8_t sa = src >> 24;
+    if (sa == 0) return;
+    if (sa == 255) { *dst = src; return; }
+
+    uint32_t d = *dst;
+    uint8_t da = d >> 24;
+    uint8_t sr = (src >> 16) & 0xFF, sg = (src >> 8) & 0xFF, sb = src & 0xFF;
+    uint8_t dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
+
+    uint16_t a = sa + ((da * (255 - sa)) >> 8);
+    uint16_t r = ((sr * sa) + (dr * (255 - sa))) >> 8;
+    uint16_t g = ((sg * sa) + (dg * (255 - sa))) >> 8;
+    uint16_t b = ((sb * sa) + (db * (255 - sa))) >> 8;
+
+    *dst = argb((uint8_t)a, (uint8_t)r, (uint8_t)g, (uint8_t)b);
+}
+
+/* ========================================================================
+ * DRM/KMS Types
  * ======================================================================== */
 
 typedef struct {
@@ -133,7 +149,7 @@ void free_image(image_t *img);
  * ======================================================================== */
 
 typedef struct {
-    void *info;        /* stbtt_fontinfo (opaque to avoid header dependency) */
+    void *info;
     uint8_t *data;
     size_t data_size;
     float scale;
@@ -147,7 +163,9 @@ typedef struct {
 
 int font_load(const char *path, float pixel_height);
 void font_unload(void);
+int font_is_loaded(void);
 int text_width(const char *text);
+int text_height(void);
 
 /* ========================================================================
  * Element Types
@@ -177,7 +195,7 @@ typedef struct {
     int id;
     int x, y, w, h;
     uint32_t color;
-    int blend;  /* 0 = replace, 1 = alpha blend */
+    int blend;
 } rect_element_t;
 
 typedef struct {
@@ -201,42 +219,34 @@ typedef struct {
 
 typedef struct {
     drm_context_t drm;
-    
-    /* Background */
     image_t bg_image;
     int bg_loaded;
     int bg_scale_mode;
-    
-    /* Elements */
     text_element_t texts[MAX_TEXT_ELEMENTS];
     image_overlay_t overlays[MAX_IMAGE_OVERLAYS];
     rect_element_t rects[MAX_RECTANGLES];
     progress_bar_t bars[MAX_PROGRESS_BARS];
-    
-    /* Pipe */
     int pipe_fd;
     char pipe_path[256];
     int running;
     int needs_render;
-    
-    /* Debug */
-    int ready;  /* Set to 1 after first successful render */
+    int ready;
 } splash_state_t;
 
 /* ========================================================================
- * Function Prototypes - Organized by Module
+ * Function Prototypes
  * ======================================================================== */
 
-/* drm.c - DRM/KMS interface */
+/* drm.c */
 int drm_init(drm_context_t *ctx, const char *device);
 void drm_cleanup(drm_context_t *ctx);
 void drm_flip(drm_context_t *ctx);
 
-/* render.c - Graphics rendering */
+/* render.c */
 void render_frame(splash_state_t *st);
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
 void draw_rect_blend(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
-void draw_image(drm_buffer_t *buf, int x, int y, int w, int h, 
+void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
                 const uint8_t *rgba, int img_w, int img_h);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb);
@@ -244,15 +254,15 @@ void draw_rect_element(drm_buffer_t *buf, rect_element_t *re);
 void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
                            int mode, int *out_x, int *out_y, int *out_w, int *out_h);
 
-/* cmd.c - Command parsing and handling */
+/* cmd.c */
 int handle_command(splash_state_t *st, const char *cmdline);
 
-/* pipe.c - Named pipe management */
+/* pipe.c */
 int pipe_create(const char *path);
 int pipe_reopen(splash_state_t *st, const char *new_path);
 int pipe_read_command(splash_state_t *st, char *buf, int max_len);
 
-/* elements.c - Element management */
+/* elements.c */
 text_element_t* text_find(splash_state_t *st, int id);
 text_element_t* text_alloc(splash_state_t *st);
 image_overlay_t* overlay_find(splash_state_t *st, int id);
@@ -261,7 +271,7 @@ rect_element_t* rect_find(splash_state_t *st, int id);
 rect_element_t* rect_alloc(splash_state_t *st);
 void clear_all_elements(splash_state_t *st);
 
-/* utils.c - Utility functions */
+/* utils.c */
 void set_default_progress_colors(progress_bar_t *pb, int style);
 int clamp(int val, int min, int max);
 float fclamp(float val, float min, float max);
