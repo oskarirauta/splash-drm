@@ -15,10 +15,12 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/select.h>
-#include <sys/time.h>
-#include <libdrm/drm_mode.h>
+#include <time.h>
+#include <math.h>
+
+#include <libdrm/drm.h>
+#include <xf86drmMode.h>
 
 /* ========================================================================
  * Build Configuration
@@ -106,7 +108,7 @@ typedef struct {
     uint8_t *map;
 } drm_buffer_t;
 
-/* Nimetty uudelleen välttääkseen törmäyksen libdrm:n drm_context_t:n kanssa */
+/* Renamed to avoid collision with libdrm's drm_context_t */
 typedef struct {
     int fd;
     uint32_t conn_id;
@@ -238,12 +240,12 @@ void render_frame(splash_state_t *st);
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
 void draw_rect_blend(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
 void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
-                const uint8_t *rgba, int img_w, int img_h);
+    const uint8_t *rgba, int img_w, int img_h);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb);
 void draw_rect_element(drm_buffer_t *buf, rect_element_t *re);
 void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
-                           int mode, int *out_x, int *out_y, int *out_w, int *out_h);
+    int mode, int *out_x, int *out_y, int *out_w, int *out_h);
 
 /* cmd.c */
 int handle_command(splash_state_t *st, const char *cmdline);

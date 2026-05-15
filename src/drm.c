@@ -1,6 +1,6 @@
 /*
  * drm.c - Direct DRM/KMS interface using kernel ioctls
- * 
+ *
  * Reimplements minimal libdrm functionality for zero external dependencies.
  */
 
@@ -83,7 +83,7 @@ static int _drm_ioctl(int fd, unsigned long request, void *arg) {
 static _drmModeRes* _drmModeGetResources(int fd) {
     struct drm_mode_card_res res = {0};
     uint64_t fbs[64], crtcs[64], connectors[64], encoders[64];
-    
+
     res.fb_id_ptr = (uint64_t)(uintptr_t)fbs;
     res.crtc_id_ptr = (uint64_t)(uintptr_t)crtcs;
     res.connector_id_ptr = (uint64_t)(uintptr_t)connectors;
@@ -92,17 +92,17 @@ static _drmModeRes* _drmModeGetResources(int fd) {
     res.count_crtcs = 64;
     res.count_connectors = 64;
     res.count_encoders = 64;
-    
+
     if (_drm_ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) < 0)
         return NULL;
-    
-    if (res.count_fbs > 64 || res.count_crtcs > 64 || 
+
+    if (res.count_fbs > 64 || res.count_crtcs > 64 ||
         res.count_connectors > 64 || res.count_encoders > 64)
         return NULL;
-    
+
     _drmModeRes *r = calloc(1, sizeof(_drmModeRes));
     if (!r) return NULL;
-    
+
     r->count_fbs = res.count_fbs;
     r->count_crtcs = res.count_crtcs;
     r->count_connectors = res.count_connectors;
@@ -111,7 +111,7 @@ static _drmModeRes* _drmModeGetResources(int fd) {
     r->max_width = res.max_width;
     r->min_height = res.min_height;
     r->max_height = res.max_height;
-    
+
     if (res.count_fbs) {
         r->fbs = calloc(res.count_fbs, sizeof(uint32_t));
         memcpy(r->fbs, fbs, res.count_fbs * sizeof(uint32_t));
@@ -128,7 +128,7 @@ static _drmModeRes* _drmModeGetResources(int fd) {
         r->encoders = calloc(res.count_encoders, sizeof(uint32_t));
         memcpy(r->encoders, encoders, res.count_encoders * sizeof(uint32_t));
     }
-    
+
     return r;
 }
 
@@ -143,8 +143,9 @@ static void _drmModeFreeResources(_drmModeRes *ptr) {
 
 static _drmModeConnector* _drmModeGetConnector(int fd, uint32_t connector_id) {
     struct drm_mode_get_connector conn = {0};
-    uint64_t modes_buf[64], props_buf[64], propvals_buf[64], encs_buf[64];
-    
+    _drmModeModeInfo modes_buf[64];
+    uint64_t props_buf[64], propvals_buf[64], encs_buf[64];
+
     conn.connector_id = connector_id;
     conn.modes_ptr = (uint64_t)(uintptr_t)modes_buf;
     conn.props_ptr = (uint64_t)(uintptr_t)props_buf;
@@ -153,16 +154,16 @@ static _drmModeConnector* _drmModeGetConnector(int fd, uint32_t connector_id) {
     conn.count_modes = 64;
     conn.count_props = 64;
     conn.count_encoders = 64;
-    
+
     if (_drm_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) < 0)
         return NULL;
-    
+
     if (conn.count_modes > 64 || conn.count_props > 64 || conn.count_encoders > 64)
         return NULL;
-    
+
     _drmModeConnector *c = calloc(1, sizeof(_drmModeConnector));
     if (!c) return NULL;
-    
+
     c->connector_id = conn.connector_id;
     c->encoder_id = conn.encoder_id;
     c->connector_type = conn.connector_type;
@@ -174,7 +175,7 @@ static _drmModeConnector* _drmModeGetConnector(int fd, uint32_t connector_id) {
     c->count_modes = conn.count_modes;
     c->count_props = conn.count_props;
     c->count_encoders = conn.count_encoders;
-    
+
     if (conn.count_modes) {
         c->modes = calloc(conn.count_modes, sizeof(_drmModeModeInfo));
         memcpy(c->modes, modes_buf, conn.count_modes * sizeof(_drmModeModeInfo));
@@ -189,7 +190,7 @@ static _drmModeConnector* _drmModeGetConnector(int fd, uint32_t connector_id) {
         c->encoders = calloc(conn.count_encoders, sizeof(uint32_t));
         memcpy(c->encoders, encs_buf, conn.count_encoders * sizeof(uint32_t));
     }
-    
+
     return c;
 }
 
@@ -205,19 +206,19 @@ static void _drmModeFreeConnector(_drmModeConnector *ptr) {
 static _drmModeEncoder* _drmModeGetEncoder(int fd, uint32_t encoder_id) {
     struct drm_mode_get_encoder enc = {0};
     enc.encoder_id = encoder_id;
-    
+
     if (_drm_ioctl(fd, DRM_IOCTL_MODE_GETENCODER, &enc) < 0)
         return NULL;
-    
+
     _drmModeEncoder *e = calloc(1, sizeof(_drmModeEncoder));
     if (!e) return NULL;
-    
+
     e->encoder_id = enc.encoder_id;
     e->encoder_type = enc.encoder_type;
     e->crtc_id = enc.crtc_id;
     e->possible_crtcs = enc.possible_crtcs;
     e->possible_clones = enc.possible_clones;
-    
+
     return e;
 }
 
@@ -238,14 +239,12 @@ static _drmModeCrtc* _drmModeGetCrtc(int fd, uint32_t crtc_id) {
     c->crtc_id = crtc.crtc_id;
     c->x = crtc.x;
     c->y = crtc.y;
-    /* c->width ja c->height EIVÄT ole kernelin rakenteessa! */
-    /* Jos tarvitset ne, hae ne mode-rakenteesta: */
     if (crtc.mode_valid) {
-        c->width = crtc.mode.hdisplay;   /* ← Näin */
-        c->height = crtc.mode.vdisplay;  /* ← Näin */
+        c->width = crtc.mode.hdisplay;
+        c->height = crtc.mode.vdisplay;
     }
     c->mode_valid = crtc.mode_valid;
-    c->buffer_id = crtc.fb_id;           /* ← fb_id, ei "buffer_id" */
+    c->buffer_id = crtc.fb_id;
     if (crtc.mode_valid)
         memcpy(&c->mode, &crtc.mode, sizeof(_drmModeModeInfo));
     c->gamma_size = crtc.gamma_size;
@@ -275,8 +274,8 @@ static int _drmModeSetCrtc(int fd, uint32_t crtcId, uint32_t bufferId,
 }
 
 static int _drmModeAddFB(int fd, uint32_t width, uint32_t height, uint8_t depth,
-                        uint8_t bpp, uint32_t pitch, uint32_t bo_handle,
-                        uint32_t *buf_id) {
+                         uint8_t bpp, uint32_t pitch, uint32_t bo_handle,
+                         uint32_t *buf_id) {
     struct drm_mode_fb_cmd fbcmd = {0};
     fbcmd.width = width;
     fbcmd.height = height;
@@ -284,7 +283,7 @@ static int _drmModeAddFB(int fd, uint32_t width, uint32_t height, uint8_t depth,
     fbcmd.bpp = bpp;
     fbcmd.depth = depth;
     fbcmd.handle = bo_handle;
-    
+
     int ret = _drm_ioctl(fd, DRM_IOCTL_MODE_ADDFB, &fbcmd);
     if (ret < 0) return ret;
     *buf_id = fbcmd.fb_id;
@@ -307,19 +306,19 @@ static int find_crtc_for_encoder(_drmModeRes *res, _drmModeEncoder *enc) {
     return -1;
 }
 
-static int find_connector_and_crtc(int fd, uint32_t *conn_id, uint32_t *crtc_id, 
-                                    drm_mode_info_t *mode) {
+static int find_connector_and_crtc(int fd, uint32_t *conn_id, uint32_t *crtc_id,
+                                   drmModeModeInfo *mode) {
     _drmModeRes *res = _drmModeGetResources(fd);
     if (!res) return -1;
-    
+
     for (int i = 0; i < res->count_connectors; i++) {
         _drmModeConnector *conn = _drmModeGetConnector(fd, res->connectors[i]);
         if (!conn) continue;
-        
+
         if (conn->connection == DRM_MODE_CONNECTED && conn->count_modes > 0) {
             *conn_id = conn->connector_id;
-            memcpy(mode, &conn->modes[0], sizeof(drm_mode_info_t));
-            
+            memcpy(mode, &conn->modes[0], sizeof(drmModeModeInfo));
+
             if (conn->encoder_id) {
                 _drmModeEncoder *enc = _drmModeGetEncoder(fd, conn->encoder_id);
                 if (enc) {
@@ -341,7 +340,7 @@ static int find_connector_and_crtc(int fd, uint32_t *conn_id, uint32_t *crtc_id,
                     _drmModeFreeEncoder(enc);
                 }
             }
-            
+
             for (int j = 0; j < conn->count_encoders; j++) {
                 _drmModeEncoder *enc = _drmModeGetEncoder(fd, conn->encoders[j]);
                 if (!enc) continue;
@@ -358,7 +357,7 @@ static int find_connector_and_crtc(int fd, uint32_t *conn_id, uint32_t *crtc_id,
         }
         _drmModeFreeConnector(conn);
     }
-    
+
     _drmModeFreeResources(res);
     return -1;
 }
@@ -372,30 +371,30 @@ static int create_dumb_buffer(int fd, drm_buffer_t *buf, uint32_t width, uint32_
     creq.width = width;
     creq.height = height;
     creq.bpp = 32;
-    
+
     if (_drm_ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq) < 0) return -1;
-    
+
     buf->width = width;
     buf->height = height;
     buf->pitch = creq.pitch;
     buf->handle = creq.handle;
     buf->size = creq.size;
-    
+
     if (_drmModeAddFB(fd, width, height, 24, 32, creq.pitch, creq.handle, &buf->fb_id) < 0)
         goto fail_create;
-    
+
     struct drm_mode_map_dumb mreq = {0};
     mreq.handle = creq.handle;
     if (_drm_ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq) < 0)
         goto fail_fb;
-    
+
     buf->map = mmap(0, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mreq.offset);
     if (buf->map == MAP_FAILED)
         goto fail_fb;
-    
+
     memset(buf->map, 0, buf->size);
     return 0;
-    
+
 fail_fb:
     _drmModeRmFB(fd, buf->fb_id);
 fail_create:
@@ -429,7 +428,7 @@ static void destroy_dumb_buffer(int fd, drm_buffer_t *buf) {
 static int drm_open_device(const char *path) {
     int fd = open(path, O_RDWR | O_CLOEXEC);
     if (fd < 0) return -1;
-    
+
     struct drm_version ver = {0};
     if (_drm_ioctl(fd, DRM_IOCTL_VERSION, &ver) < 0) {
         close(fd);
@@ -438,20 +437,20 @@ static int drm_open_device(const char *path) {
     return fd;
 }
 
-int drm_init(splash_context_t *ctx, const char *device) {
+int drm_init(splash_drm_t *ctx, const char *device) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->fd = drm_open_device(device);
     if (ctx->fd < 0) return -1;
-    
+
     if (find_connector_and_crtc(ctx->fd, &ctx->conn_id, &ctx->crtc_id, &ctx->mode) < 0) {
         close(ctx->fd);
         ctx->fd = -1;
         return -1;
     }
-    
+
     uint32_t w = ctx->mode.hdisplay;
     uint32_t h = ctx->mode.vdisplay;
-    
+
     if (create_dumb_buffer(ctx->fd, &ctx->buf[0], w, h) < 0 ||
         create_dumb_buffer(ctx->fd, &ctx->buf[1], w, h) < 0) {
         destroy_dumb_buffer(ctx->fd, &ctx->buf[0]);
@@ -459,7 +458,7 @@ int drm_init(splash_context_t *ctx, const char *device) {
         ctx->fd = -1;
         return -1;
     }
-    
+
     /* Save current CRTC state for cleanup */
     _drmModeCrtc *crtc = _drmModeGetCrtc(ctx->fd, ctx->crtc_id);
     if (crtc) {
@@ -469,25 +468,25 @@ int drm_init(splash_context_t *ctx, const char *device) {
         ctx->saved_crtc.y = crtc->y;
         ctx->saved_crtc.mode_valid = crtc->mode_valid;
         if (crtc->mode_valid)
-            memcpy(&ctx->saved_crtc.mode, &crtc->mode, sizeof(drm_mode_info_t));
+            memcpy(&ctx->saved_crtc.mode, &crtc->mode, sizeof(drmModeModeInfo));
         _drmModeFreeCrtc(crtc);
     }
-    
+
     /* Set initial mode */
     uint32_t conn = ctx->conn_id;
-    _drmModeSetCrtc(ctx->fd, ctx->crtc_id, ctx->buf[0].fb_id, 0, 0, &conn, 1, 
+    _drmModeSetCrtc(ctx->fd, ctx->crtc_id, ctx->buf[0].fb_id, 0, 0, &conn, 1,
                     (_drmModeModeInfo*)&ctx->mode);
     ctx->front_buf = 0;
-    
+
     return 0;
 }
 
-void drm_cleanup(splash_context_t *ctx) {
+void drm_cleanup(splash_drm_t *ctx) {
     if (ctx->saved_crtc.mode_valid) {
         uint32_t conn = ctx->conn_id;
         _drmModeSetCrtc(ctx->fd, ctx->saved_crtc.crtc_id, ctx->saved_crtc.buffer_id,
-                       ctx->saved_crtc.x, ctx->saved_crtc.y, &conn, 1,
-                       (_drmModeModeInfo*)&ctx->saved_crtc.mode);
+                        ctx->saved_crtc.x, ctx->saved_crtc.y, &conn, 1,
+                        (_drmModeModeInfo*)&ctx->saved_crtc.mode);
     }
     destroy_dumb_buffer(ctx->fd, &ctx->buf[0]);
     destroy_dumb_buffer(ctx->fd, &ctx->buf[1]);
@@ -497,7 +496,7 @@ void drm_cleanup(splash_context_t *ctx) {
     }
 }
 
-void drm_flip(splash_context_t *ctx) {
+void drm_flip(splash_drm_t *ctx) {
     int next = ctx->front_buf ^ 1;
     uint32_t conn = ctx->conn_id;
     _drmModeSetCrtc(ctx->fd, ctx->crtc_id, ctx->buf[next].fb_id, 0, 0, &conn, 1,
