@@ -2,7 +2,7 @@
 # Self-contained DRM/KMS bootsplash for Linux initrd
 
 CC      ?= gcc
-CFLAGS  = -O2 -Wall -Wextra -std=c99 -D_GNU_SOURCE -I./include
+CFLAGS  = -O2 -Wall -Wextra -std=c99 -D_GNU_SOURCE -Wno-unused-function -I./include
 LDFLAGS = -lm
 
 # For fully static initrd binary:
