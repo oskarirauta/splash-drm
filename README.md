@@ -33,6 +33,23 @@ Two programs are built:
 - **Vendored dependencies** — cJSON and stb are git submodules; nothing
   external is needed at runtime.
 
+## Version
+
+Why version 3.x.x? Where is version 1.x.x or 2.x.x?
+Version 1.x.x is legacy version of this software (although this is a completely
+made out of scratch, some ideas just were kept), was my original splash which was
+originally forked from stefandmn's Splash. Version 2.0.0 was this same software
+that is now this 3.x.x, version 2.x.x just wasn't ever made to release as it
+was work in progress title, transformation phase from my old splash.
+My original splash, v1.x.x is very much still working but it uses legacy framebuffer,
+and I wanted to move to newer technology - it made a need for splash-drm.
+Splash-drm also contains some bells and whistles, so that it should fit to needs
+of most users.
+
+References:
+splash 1.x.x: https://github.com/oskarirauta/splash
+stefandmn's splash: https://github.com/stefandmn/Splash
+
 ## Building
 
 ### Requirements
@@ -227,6 +244,5 @@ splash-drm/
 
 ## License
 
-splash-drm is released into the public domain (Unlicense). The vendored
-dependencies keep their own licenses: stb is public domain, and cJSON is
-MIT-licensed.
+splash-drm is released under the MIT License. The vendored dependencies
+keep their own licenses: cJSON is MIT-licensed, and stb is public domain.
