@@ -48,8 +48,8 @@ of most users.
 
 ### References
 
-splash 1.x.x: https://github.com/oskarirauta/splash
-stefandmn's splash: https://github.com/stefandmn/Splash
+ - [splash 1.x.x](https://github.com/oskarirauta/splash)
+ - [stefandmn's splash](https://github.com/stefandmn/Splash)
 
 ## Building
 
