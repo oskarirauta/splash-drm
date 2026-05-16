@@ -174,27 +174,30 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
         tw += (int)(advance * scale);
     }
 
-    int th = f->ascent - f->descent;
-    if (te->font_size > 0) {
-        int ascent, descent, line_gap;
-        stbtt_GetFontVMetrics(info, &ascent, &descent, &line_gap);
-        int fh_ascent = (int)(ascent * scale);
-        int fh_descent = (int)(descent * scale);
-        th = fh_ascent - fh_descent;
-    }
+    /* Calculate font metrics for this scale */
+    int ascent, descent, line_gap;
+    stbtt_GetFontVMetrics(info, &ascent, &descent, &line_gap);
+    int fh_ascent = (int)(ascent * scale);
+    int fh_descent = (int)(descent * scale);
+    int th = fh_ascent - fh_descent;
+    int baseline = fh_ascent;
 
+    /* Horizontal alignment */
     int x = te->x;
-    int y = te->y + f->baseline;
-    if (te->font_size > 0) {
-        int ascent, descent, line_gap;
-        stbtt_GetFontVMetrics(info, &ascent, &descent, &line_gap);
-        y = te->y + (int)(ascent * scale);
-    }
-
     if (te->align == ALIGN_CENTER)
         x -= tw / 2;
     else if (te->align == ALIGN_RIGHT)
         x -= tw;
+
+    /* Vertical alignment */
+    int y = te->y;
+    if (te->valign == VALIGN_MIDDLE)
+        y -= th / 2;
+    else if (te->valign == VALIGN_BOTTOM)
+        y -= th;
+    
+    /* Add baseline so text sits correctly on the line */
+    y += baseline;
 
     for (const char *p = te->text; *p; p++) {
         int advance, lsb;

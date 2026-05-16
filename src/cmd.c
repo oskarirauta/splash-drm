@@ -176,6 +176,7 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
     te->x = get_int(args, "x", 0);
     te->y = get_int(args, "y", 0);
     te->align = get_align(args, "align", ALIGN_LEFT);
+    te->valign = get_valign(args, "valign", VALIGN_TOP);  /* NEW */
     te->color = get_color(args, "color", rgb(255, 255, 255));
     te->font_slot = get_int(args, "font", 0);
     te->font_size = get_float(args, "size", 0);
@@ -187,11 +188,6 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
     te->active = 1;
     st->needs_render = 1;
     send_response(st, client_idx, create_response("ok", NULL));
-
-    if (st->debug) {
-        fprintf(stderr, "[debug] TEXT id=%d x=%d y=%d align=%d color=#%06X text=\"%s\" font=%d size=%.1f\n",
-                te->id, te->x, te->y, te->align, te->color & 0xFFFFFF, te->text, te->font_slot, te->font_size);
-    }
     return 0;
 }
 
@@ -324,29 +320,42 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
     }
 
     pb->id = id;
-    pb->x = get_int(args, "x", 0);
-    pb->y = get_int(args, "y", 0);
+    pb->x = get_int(args, "x", -1);
+    pb->y = get_int(args, "y", -1);
     pb->w = get_int(args, "w", 100);
     pb->h = get_int(args, "h", 20);
+    pb->align = get_align(args, "align", ALIGN_CENTER);      /* NEW */
+    pb->valign = get_valign(args, "valign", VALIGN_MIDDLE);  /* NEW */
     pb->style = get_int(args, "style", 0);
-    
-    const char *prefix = get_string(args, "prefix", "");
-    strncpy(pb->prefix, prefix, sizeof(pb->prefix) - 1);
-    pb->prefix[sizeof(pb->prefix) - 1] = '\0';
-    
-    const char *suffix = get_string(args, "suffix", "");
-    strncpy(pb->suffix, suffix, sizeof(pb->suffix) - 1);
-    pb->suffix[sizeof(pb->suffix) - 1] = '\0';
-    
     pb->value = get_float(args, "value", 0);
+    pb->borderless = cJSON_IsTrue(cJSON_GetObjectItem(args, "borderless"));
+    pb->border_width = get_int(args, "border_width", 2);
+    pb->radius = get_int(args, "radius", 0);
     pb->font_slot = get_int(args, "font", 0);
     pb->font_size = get_float(args, "size", 0);
-    
-    const char *inner = get_string(args, "text", "");
-    strncpy(pb->inner, inner, sizeof(pb->inner) - 1);
-    pb->inner[sizeof(pb->inner) - 1] = '\0';
+    pb->show_percent = cJSON_IsTrue(cJSON_GetObjectItem(args, "show_percent"));
 
+    /* Colors: if provided, set style to -1 (custom) */
+    int has_custom_color = 0;
+    cJSON *bg = cJSON_GetObjectItem(args, "bg_color");
+    cJSON *bar = cJSON_GetObjectItem(args, "bar_color");
+    cJSON *border = cJSON_GetObjectItem(args, "border_color");
+    cJSON *text = cJSON_GetObjectItem(args, "text_color");
+    
+    if (bg || bar || border || text) {
+        has_custom_color = 1;
+        pb->style = -1;
+    }
+    
     set_default_progress_colors(pb, pb->style);
+    
+    /* Override with custom colors if provided */
+    if (has_custom_color) {
+        if (bg) pb->bg_color = parse_color(bg->valuestring);
+        if (bar) pb->bar_color = parse_color(bar->valuestring);
+        if (border) pb->border_color = parse_color(border->valuestring);
+        if (text) pb->text_color = parse_color(text->valuestring);
+    }
 
     pb->active = 1;
     st->needs_render = 1;
@@ -367,11 +376,9 @@ static int cmd_update_progress(splash_state_t *st, cJSON *args, int client_idx) 
 
     pb->value = get_float(args, "value", 0);
     
-    const char *inner = get_string(args, "text", NULL);
-    if (inner) {
-        strncpy(pb->inner, inner, sizeof(pb->inner) - 1);
-        pb->inner[sizeof(pb->inner) - 1] = '\0';
-    }
+    /* Update show_percent if provided */
+    cJSON *sp = cJSON_GetObjectItem(args, "show_percent");
+    if (sp) pb->show_percent = cJSON_IsTrue(sp);
     
     st->needs_render = 1;
     send_response(st, client_idx, create_response("ok", NULL));

@@ -31,46 +31,50 @@ uint32_t parse_color(const char *str) {
  * ======================================================================== */
 
 void set_default_progress_colors(progress_bar_t *pb, int style) {
+
+    if (style < 0)
+        return;
+
     switch (style) {
         case 0: /* Modern blue */
             pb->bg_color = argb(255, 30, 30, 30);
-            pb->fg_color = argb(255, 0, 150, 255);
+            pb->bar_color = argb(255, 0, 150, 255);
             pb->border_color = argb(255, 60, 60, 60);
             pb->text_color = argb(255, 255, 255, 255);
             break;
         case 1: /* Green success */
             pb->bg_color = argb(255, 30, 30, 30);
-            pb->fg_color = argb(255, 0, 200, 100);
+            pb->bar_color = argb(255, 0, 200, 100);
             pb->border_color = argb(255, 60, 60, 60);
             pb->text_color = argb(255, 255, 255, 255);
             break;
         case 2: /* Amber warning */
             pb->bg_color = argb(255, 30, 30, 30);
-            pb->fg_color = argb(255, 255, 180, 0);
+            pb->bar_color = argb(255, 255, 180, 0);
             pb->border_color = argb(255, 60, 60, 60);
             pb->text_color = argb(255, 255, 255, 255);
             break;
         case 3: /* Red error */
             pb->bg_color = argb(255, 30, 30, 30);
-            pb->fg_color = argb(255, 255, 60, 60);
+            pb->bar_color = argb(255, 255, 60, 60);
             pb->border_color = argb(255, 60, 60, 60);
             pb->text_color = argb(255, 255, 255, 255);
             break;
         case 4: /* Purple accent */
             pb->bg_color = argb(255, 30, 30, 30);
-            pb->fg_color = argb(255, 150, 50, 255);
+            pb->bar_color = argb(255, 150, 50, 255);
             pb->border_color = argb(255, 60, 60, 60);
             pb->text_color = argb(255, 255, 255, 255);
             break;
         case 5: /* Cyan cool */
             pb->bg_color = argb(255, 30, 30, 30);
-            pb->fg_color = argb(255, 0, 200, 200);
+            pb->bar_color = argb(255, 0, 200, 200);
             pb->border_color = argb(255, 60, 60, 60);
             pb->text_color = argb(255, 255, 255, 255);
             break;
         default:
             pb->bg_color = argb(255, 40, 40, 40);
-            pb->fg_color = argb(255, 0, 150, 255);
+            pb->bar_color = argb(255, 0, 150, 255);
             pb->border_color = argb(255, 80, 80, 80);
             pb->text_color = argb(255, 255, 255, 255);
             break;

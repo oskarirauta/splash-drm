@@ -31,11 +31,11 @@
  * ======================================================================== */
 
 #define SPLASH_VERSION "3.0.0"
-#define MAX_TEXT_ELEMENTS 16
+#define MAX_TEXT_ELEMENTS 32
 #define MAX_IMAGE_OVERLAYS 16
 #define MAX_PROGRESS_BARS 8
 #define MAX_RECTANGLES 16
-#define MAX_FONTS 4
+#define MAX_FONTS 5
 #define CMD_MAX_LEN 8192
 #define MAX_FONT_SIZE 128
 #define RENDER_FPS 30
@@ -182,6 +182,7 @@ typedef struct {
     char text[256];
     int x, y;
     int align;
+    int valign;
     uint32_t color;
     int font_slot;
     float font_size;
@@ -213,17 +214,24 @@ typedef struct {
     int active;
     int id;
     int x, y, w, h;
+    int align;
+    int valign;
     int style;
-    char prefix[128];
-    char suffix[16];
-    char inner[128];
     float value;
-    uint32_t bg_color;
-    uint32_t fg_color;
-    uint32_t border_color;
-    uint32_t text_color;
+
+    /* Custom colors (used when style == -1 or override) */
+    uint32_t bg_color;      /* Background (empty) color */
+    uint32_t bar_color;     /* Fill color */
+    uint32_t border_color;  /* Border color */
+    uint32_t text_color;    /* Percent text color */
+
+    int borderless;         /* No border */
+    int border_width;       /* Border thickness */
+    int radius;             /* Corner radius */
+
     int font_slot;
     float font_size;
+    int show_percent;
 } progress_bar_t;
 
 /* ========================================================================
@@ -268,8 +276,10 @@ void drm_flip(splash_drm_t *ctx);
 void render_frame(splash_state_t *st);
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
 void draw_rect_blend(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
-void draw_rounded_rect(drm_buffer_t *buf, int x, int y, int w, int h, int radius, 
-                       uint32_t fill_color, uint32_t border_color, int border_width);
+void draw_rounded_rect(drm_buffer_t *buf, int x, int y, int w, int h, int radius,
+                       uint32_t fill_color, uint32_t border_color, int border_width,
+                       int fill, int blend);
+void draw_rounded_fill(drm_buffer_t *buf, int x, int y, int w, int h, int r, uint32_t color);
 void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
     const uint8_t *rgba, int img_w, int img_h);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);
