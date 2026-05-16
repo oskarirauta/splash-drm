@@ -1,54 +1,52 @@
-# splash-drm Makefile
-# Self-contained DRM/KMS bootsplash for Linux initrd
+# Makefile for splash-drm
 
-CC      ?= gcc
-CFLAGS  = -O2 -Wall -Wextra -std=c99 -D_GNU_SOURCE -Wno-unused-function -I./include
-LDFLAGS = -lm
+CC ?= gcc
+CFLAGS ?= -O2 -Wall -Wextra -std=c99 -D_GNU_SOURCE -Wno-unused-function -I./include -I/usr/include -I/usr/include/libdrm
+LDFLAGS ?= -lm
 
-# For fully static initrd binary:
-# make STATIC=1
-ifdef STATIC
-    LDFLAGS += -static
-endif
+SRCDIR = src
+INCDIR = include
+OBJDIR = obj
 
-DAEMON_SRCS = src/main.c \
-              src/drm.c \
-              src/render.c \
-              src/font.c \
-              src/image.c \
-              src/elements.c \
-              src/pipe.c \
-              src/cmd.c \
-              src/utils.c
+SOURCES = $(SRCDIR)/main.c \
+          $(SRCDIR)/drm.c \
+          $(SRCDIR)/render.c \
+          $(SRCDIR)/font.c \
+          $(SRCDIR)/image.c \
+          $(SRCDIR)/elements.c \
+          $(SRCDIR)/socket.c \
+          $(SRCDIR)/cmd.c \
+          $(SRCDIR)/utils.c
 
-CLI_SRCS = src/splash-cli.c
+CTL_SOURCES = $(SRCDIR)/splash-ctl.c
 
-DAEMON_OBJS = $(DAEMON_SRCS:.c=.o)
-CLI_OBJS = $(CLI_SRCS:.c=.o)
+CJSON_SOURCES = $(SRCDIR)/cJSON.c
 
-DAEMON = splash-drm
-CLI = splash-cli
+OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES)) $(OBJDIR)/cJSON.o
+CTL_OBJECTS = $(OBJDIR)/splash-ctl.o $(OBJDIR)/cJSON.o
 
-.PHONY: all clean install static
+TARGET = splash-drm
+CTL_TARGET = splash-ctl
 
-all: $(DAEMON) $(CLI)
+.PHONY: all clean static
 
-$(DAEMON): $(DAEMON_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+all: $(TARGET) $(CTL_TARGET)
 
-$(CLI): $(CLI_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
 
-%.o: %.c
+$(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(TARGET): $(OBJECTS)
+	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
+
+$(CTL_TARGET): $(CTL_OBJECTS)
+	$(CC) $(CTL_OBJECTS) -o $@
+
+static: CFLAGS += -static
+static: LDFLAGS += -static
+static: all
+
 clean:
-	rm -f $(DAEMON_OBJS) $(CLI_OBJS) $(DAEMON) $(CLI)
-
-install: $(DAEMON) $(CLI)
-	install -D -m 755 $(DAEMON) $(DESTDIR)/usr/bin/$(DAEMON)
-	install -D -m 755 $(CLI) $(DESTDIR)/usr/bin/$(CLI)
-
-# Static build target
-static:
-	$(MAKE) STATIC=1
+	rm -rf $(OBJDIR) $(TARGET) $(CTL_TARGET)

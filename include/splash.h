@@ -16,26 +16,32 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <poll.h>
 #include <time.h>
 #include <math.h>
 #include <libdrm/drm.h>
 #include <xf86drmMode.h>
 
+#include "cJSON.h"
+
 /* ========================================================================
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION "2.1.0"
+#define SPLASH_VERSION "3.0.0"
 #define MAX_TEXT_ELEMENTS 16
 #define MAX_IMAGE_OVERLAYS 16
 #define MAX_PROGRESS_BARS 8
 #define MAX_RECTANGLES 16
 #define MAX_FONTS 4
-#define CMD_MAX_LEN 4096
+#define CMD_MAX_LEN 8192
 #define MAX_FONT_SIZE 128
-#define PIPE_TIMEOUT_MS 100
 #define RENDER_FPS 30
+#define MAX_SOCKET_CLIENTS 4
+
+#define SOCKET_NAME "\0splash-drm"
 
 /* ========================================================================
  * Image Scaling Modes
@@ -60,7 +66,7 @@
 #define VALIGN_BOTTOM 2
 
 /* ========================================================================
- * Color Utilities (inline for performance)
+ * Color Utilities
  * ======================================================================== */
 
 static inline uint32_t argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
@@ -71,11 +77,10 @@ static inline uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
     return argb(255, r, g, b);
 }
 
-/* Parse #RGB, #RRGGBB, #RRGGBBAA colors */
 uint32_t parse_color(const char *str);
 
 /* ========================================================================
- * Pixel Blending (used by both render.c and font.c)
+ * Pixel Blending
  * ======================================================================== */
 
 static inline void blend_pixel(uint32_t *dst, uint32_t src) {
@@ -156,19 +161,14 @@ typedef struct {
     char path[256];
 } font_t;
 
-/* Font management */
 int font_load(const char *path, float pixel_height, int slot);
 void font_unload(int slot);
 void font_unload_all(void);
 int font_is_loaded(int slot);
 int font_count_loaded(void);
-
-/* Text measurement with specific font */
 int text_width_font(const char *text, int font_slot);
 int text_height_font(int font_slot);
 int text_baseline_font(int font_slot);
-
-/* Backwards compatibility - uses font slot 0 */
 int text_width(const char *text);
 int text_height(void);
 
@@ -183,8 +183,8 @@ typedef struct {
     int x, y;
     int align;
     uint32_t color;
-    int font_slot;        /* which font to use (0 = default) */
-    float font_size;      /* override font size (0 = use font default) */
+    int font_slot;
+    float font_size;
 } text_element_t;
 
 typedef struct {
@@ -203,6 +203,10 @@ typedef struct {
     int x, y, w, h;
     uint32_t color;
     int blend;
+    int fill;
+    int radius;
+    uint32_t border_color;
+    int border_width;
 } rect_element_t;
 
 typedef struct {
@@ -218,8 +222,8 @@ typedef struct {
     uint32_t fg_color;
     uint32_t border_color;
     uint32_t text_color;
-    int font_slot;        /* which font for progress text */
-    float font_size;      /* font size for progress text */
+    int font_slot;
+    float font_size;
 } progress_bar_t;
 
 /* ========================================================================
@@ -231,23 +235,28 @@ typedef struct {
     image_t bg_image;
     int bg_loaded;
     int bg_scale_mode;
-    float bg_custom_scale;    /* custom scale factor */
-    uint32_t bg_color;        /* background color when no image */
+    float bg_custom_scale;
+    uint32_t bg_color;
     text_element_t texts[MAX_TEXT_ELEMENTS];
     image_overlay_t overlays[MAX_IMAGE_OVERLAYS];
     rect_element_t rects[MAX_RECTANGLES];
     progress_bar_t bars[MAX_PROGRESS_BARS];
-    int pipe_fd;
-    char pipe_path[256];
+    
+    int server_fd;
+    int client_fds[MAX_SOCKET_CLIENTS];
+    size_t client_cmd_len[MAX_SOCKET_CLIENTS];
+    char client_cmd_buf[MAX_SOCKET_CLIENTS][CMD_MAX_LEN];
+    
     int running;
     int needs_render;
     int ready;
-    int quiet;                /* --quiet flag */
-    int debug;                /* --debug flag */
+    int frozen;
+    int quiet;
+    int debug;
 } splash_state_t;
 
 /* ========================================================================
- * Function Prototypes
+ * Function Prototypes - NÄMÄ splash_state_t:n JÄLKEEN!
  * ======================================================================== */
 
 /* drm.c */
@@ -259,6 +268,8 @@ void drm_flip(splash_drm_t *ctx);
 void render_frame(splash_state_t *st);
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
 void draw_rect_blend(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
+void draw_rounded_rect(drm_buffer_t *buf, int x, int y, int w, int h, int radius, 
+                       uint32_t fill_color, uint32_t border_color, int border_width);
 void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
     const uint8_t *rgba, int img_w, int img_h);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);
@@ -268,12 +279,16 @@ void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
     int mode, float custom_scale, int *out_x, int *out_y, int *out_w, int *out_h);
 
 /* cmd.c */
-int handle_command(splash_state_t *st, const char *cmdline);
+int handle_json_command(splash_state_t *st, const char *json_str, int client_idx);
+cJSON* create_response(const char *status, const char *message);
+int process_json_batch(splash_state_t *st, cJSON *root, int client_idx);
 
-/* pipe.c */
-int pipe_create(const char *path);
-int pipe_reopen(splash_state_t *st, const char *new_path);
-int pipe_read_command(splash_state_t *st, char *buf, int max_len);
+/* socket.c */
+int socket_init(splash_state_t *st);
+void socket_cleanup(splash_state_t *st);
+int socket_poll(splash_state_t *st, struct pollfd *fds, int *nfds);
+void socket_process(splash_state_t *st, struct pollfd *fds, int nfds);
+void socket_reply_json(splash_state_t *st, int client_idx, cJSON *response);
 
 /* elements.c */
 text_element_t* text_find(splash_state_t *st, int id);
@@ -288,5 +303,14 @@ void clear_all_elements(splash_state_t *st);
 void set_default_progress_colors(progress_bar_t *pb, int style);
 int clamp(int val, int min, int max);
 float fclamp(float val, float min, float max);
+
+/* main.c helpers */
+int load_config(splash_state_t *st, const char *config_str);
+int process_startup_cmds(splash_state_t *st, const char *cmds_str);
+
+/* JSON helpers (defined in cmd.c but used in main.c) */
+int get_int(cJSON *obj, const char *key, int default_val);
+float get_float(cJSON *obj, const char *key, float default_val);
+const char* get_string(cJSON *obj, const char *key, const char *default_val);
 
 #endif /* SPLASH_H */
