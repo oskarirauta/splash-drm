@@ -100,6 +100,17 @@ static int get_filter(cJSON *obj, const char *key, int default_val) {
     return default_val;
 }
 
+/* Easing curve: "linear" | "ease_in" | "ease_out" | "ease_in_out" */
+static int get_easing(cJSON *obj, const char *key, int default_val) {
+    const char *str = get_string(obj, key, NULL);
+    if (!str) return default_val;
+    if (strcasecmp(str, "linear")      == 0) return EASE_LINEAR;
+    if (strcasecmp(str, "ease_in")     == 0) return EASE_IN;
+    if (strcasecmp(str, "ease_out")    == 0) return EASE_OUT;
+    if (strcasecmp(str, "ease_in_out") == 0) return EASE_IN_OUT;
+    return default_val;
+}
+
 /* ========================================================================
  * Command Handlers
  * ======================================================================== */
@@ -160,18 +171,56 @@ static int cmd_image(splash_state_t *st, cJSON *args, int client_idx) {
         return -1;
     }
 
-    free_image(&st->bg_image);
-    st->bg_loaded = 0;
-
-    if (load_image(path, &st->bg_image) < 0) {
+    /* Load into a temporary first, so a failed load never destroys the
+     * background that is already on screen. */
+    image_t newimg = {0};
+    if (load_image(path, &newimg) < 0) {
         send_response(st, client_idx, create_response("error", "failed to load image"));
         return -1;
     }
 
-    st->bg_loaded = 1;
-    st->bg_scale_mode = get_scale_mode(args, "mode", SCALE_CONTAIN);
-    st->bg_custom_scale = get_float(args, "scale", 1.0f);
-    st->bg_filter = get_filter(args, "filter", IMG_LANCZOS);
+    int   mode    = get_scale_mode(args, "mode", SCALE_CONTAIN);
+    float cscale  = get_float(args, "scale", 1.0f);
+    int   filter  = get_filter(args, "filter", IMG_LANCZOS);
+    int   crossfade = get_int(args, "crossfade", 0);
+
+    if (crossfade > 0 && st->bg_loaded && st->bg_image.rgba) {
+        /* Hand the current background off as the outgoing image and fade
+         * the new one in over it. */
+        free_image(&st->bg_prev);
+        st->bg_prev              = st->bg_image;   /* transfer ownership */
+        st->bg_prev_loaded       = 1;
+        st->bg_prev_scale_mode   = st->bg_scale_mode;
+        st->bg_prev_custom_scale = st->bg_custom_scale;
+        st->bg_prev_filter       = st->bg_filter;
+
+        st->bg_image        = newimg;
+        st->bg_scale_mode   = mode;
+        st->bg_custom_scale = cscale;
+        st->bg_filter       = filter;
+        st->bg_loaded       = 1;
+
+        st->bg_opacity          = 0.0f;
+        st->bg_anim.active      = 1;
+        st->bg_anim.from        = 0.0f;
+        st->bg_anim.to          = 1.0f;
+        st->bg_anim.start_ms    = now_ms();
+        st->bg_anim.duration_ms = (uint32_t)crossfade;
+        st->bg_anim.easing      = EASE_IN_OUT;
+        st->bg_anim.remove_on_end = 0;
+    } else {
+        /* Immediate swap */
+        free_image(&st->bg_image);
+        free_image(&st->bg_prev);
+        st->bg_prev_loaded  = 0;
+        st->bg_anim.active  = 0;
+        st->bg_image        = newimg;
+        st->bg_scale_mode   = mode;
+        st->bg_custom_scale = cscale;
+        st->bg_filter       = filter;
+        st->bg_loaded       = 1;
+        st->bg_opacity      = 1.0f;
+    }
 
     st->needs_render = 1;
     send_response(st, client_idx, create_response("ok", NULL));
@@ -201,12 +250,16 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
     te->font_slot = get_int(args, "font", 0);
     te->font_size = get_float(args, "size", 0);
 
-    /* Soft drop shadow: enabled with "shadow": true. */
+    /* Soft drop shadow */
     te->shadow = cJSON_IsTrue(cJSON_GetObjectItem(args, "shadow"));
     te->shadow_dx = get_int(args, "shadow_dx", 2);
     te->shadow_dy = get_int(args, "shadow_dy", 2);
     te->shadow_blur = get_int(args, "shadow_blur", 4);
     te->shadow_color = get_color(args, "shadow_color", argb(160, 0, 0, 0));
+
+    /* Master opacity; a fresh command cancels any running animation. */
+    te->opacity = get_float(args, "opacity", 1.0f);
+    te->anim.active = 0;
 
     const char *text = get_string(args, "text", "");
     strncpy(te->text, text, sizeof(te->text) - 1);
@@ -256,17 +309,20 @@ static int cmd_rect(splash_state_t *st, cJSON *args, int client_idx) {
     re->border_color = get_color(args, "border_color", re->color);
     re->border_width = get_int(args, "border_width", 0);
 
-    /* Gradient fill: "gradient" picks the direction, "grad_color" the
-     * second stop. The first stop is always "color". */
+    /* Gradient fill */
     re->grad_dir = get_gradient(args, "gradient", GRAD_NONE);
     re->grad_color = get_color(args, "grad_color", re->color);
 
-    /* Soft drop shadow: enabled with "shadow": true. */
+    /* Soft drop shadow */
     re->shadow = cJSON_IsTrue(cJSON_GetObjectItem(args, "shadow"));
     re->shadow_dx = get_int(args, "shadow_dx", 4);
     re->shadow_dy = get_int(args, "shadow_dy", 6);
     re->shadow_blur = get_int(args, "shadow_blur", 10);
     re->shadow_color = get_color(args, "shadow_color", argb(130, 0, 0, 0));
+
+    /* Master opacity; a fresh command cancels any running animation. */
+    re->opacity = get_float(args, "opacity", 1.0f);
+    re->anim.active = 0;
 
     re->active = 1;
     st->needs_render = 1;
@@ -307,6 +363,10 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
     ov->align = get_align(args, "align", ALIGN_LEFT);
     ov->valign = get_valign(args, "valign", VALIGN_TOP);
     ov->filter = get_filter(args, "filter", IMG_LANCZOS);
+
+    /* Master opacity; a fresh command cancels any running animation. */
+    ov->opacity = get_float(args, "opacity", 1.0f);
+    ov->anim.active = 0;
 
     const char *path = get_string(args, "path", NULL);
     if (!path) {
@@ -393,7 +453,6 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 
     set_default_progress_colors(pb, pb->style);
 
-    /* Override with custom colors if provided */
     if (has_custom_color) {
         if (bg) pb->bg_color = parse_color(bg->valuestring);
         if (bar) pb->bar_color = parse_color(bar->valuestring);
@@ -401,10 +460,15 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
         if (text) pb->text_color = parse_color(text->valuestring);
     }
 
-    /* Gradient for the fill: "gradient" picks the direction, "bar_color2"
-     * the second stop. The first stop is the resolved bar_color. */
+    /* Gradient for the fill */
     pb->bar_gradient = get_gradient(args, "gradient", GRAD_NONE);
     pb->bar_color2 = get_color(args, "bar_color2", pb->bar_color);
+
+    /* Indeterminate mode: a sweeping highlight instead of a fixed fill,
+     * for when the task has no measurable progress. */
+    pb->indeterminate   = cJSON_IsTrue(cJSON_GetObjectItem(args, "indeterminate"));
+    pb->indet_period_ms = (uint32_t)get_int(args, "indet_period", 1100);
+    pb->indet_start_ms  = now_ms();
 
     /* Soft drop shadow of the whole bar */
     pb->shadow = cJSON_IsTrue(cJSON_GetObjectItem(args, "shadow"));
@@ -412,6 +476,10 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
     pb->shadow_dy = get_int(args, "shadow_dy", 4);
     pb->shadow_blur = get_int(args, "shadow_blur", 12);
     pb->shadow_color = get_color(args, "shadow_color", argb(120, 0, 0, 0));
+
+    /* Master opacity; a fresh command cancels any running animation. */
+    pb->opacity = get_float(args, "opacity", 1.0f);
+    pb->anim.active = 0;
 
     pb->active = 1;
     st->needs_render = 1;
@@ -430,11 +498,22 @@ static int cmd_update_progress(splash_state_t *st, cJSON *args, int client_idx) 
         return -1;
     }
 
+    /* Only the value changes here - opacity and any running animation
+     * are deliberately left untouched, so a bar can fade while it fills. */
     pb->value = get_float(args, "value", 0);
 
-    /* Update show_percent if provided */
     cJSON *sp = cJSON_GetObjectItem(args, "show_percent");
     if (sp) pb->show_percent = cJSON_IsTrue(sp);
+
+    /* Optionally switch in/out of indeterminate mode - e.g. start a load
+     * indeterminate, then flip to a real bar once the size is known. */
+    cJSON *ind = cJSON_GetObjectItem(args, "indeterminate");
+    if (ind) {
+        int was = pb->indeterminate;
+        pb->indeterminate = cJSON_IsTrue(ind);
+        if (pb->indeterminate && !was)
+            pb->indet_start_ms = now_ms();
+    }
 
     st->needs_render = 1;
     send_response(st, client_idx, create_response("ok", NULL));
@@ -450,6 +529,204 @@ static int cmd_hide_progress(splash_state_t *st, cJSON *args, int client_idx) {
             break;
         }
     }
+    send_response(st, client_idx, create_response("ok", NULL));
+    return 0;
+}
+
+/* ------------------------------------------------------------------------
+ * Animation: animate an element's opacity over time.
+ *   {"cmd":"animate","type":"text","id":1,"property":"opacity",
+ *    "from":0,"to":1,"duration":400,"easing":"ease_out","remove_on_end":false}
+ * ------------------------------------------------------------------------ */
+static int cmd_animate(splash_state_t *st, cJSON *args, int client_idx) {
+    const char *type = get_string(args, "type", NULL);
+    int id = get_int(args, "id", -1);
+    if (!type || id < 0) {
+        send_response(st, client_idx, create_response("error", "missing type or id"));
+        return -1;
+    }
+
+    const char *prop = get_string(args, "property", "opacity");
+    if (strcasecmp(prop, "opacity") != 0) {
+        send_response(st, client_idx, create_response("error", "unknown property"));
+        return -1;
+    }
+
+    /* Resolve the element's opacity + animation slots. */
+    float  *opacity = NULL;
+    anim_t *anim    = NULL;
+
+    if (strcasecmp(type, "text") == 0) {
+        text_element_t *te = text_find(st, id);
+        if (te) { opacity = &te->opacity; anim = &te->anim; }
+    } else if (strcasecmp(type, "rect") == 0) {
+        rect_element_t *re = rect_find(st, id);
+        if (re) { opacity = &re->opacity; anim = &re->anim; }
+    } else if (strcasecmp(type, "progress") == 0) {
+        for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
+            if (st->bars[i].active && st->bars[i].id == id) {
+                opacity = &st->bars[i].opacity;
+                anim    = &st->bars[i].anim;
+                break;
+            }
+        }
+    } else if (strcasecmp(type, "overlay") == 0) {
+        image_overlay_t *ov = overlay_find(st, id);
+        if (ov) { opacity = &ov->opacity; anim = &ov->anim; }
+    } else if (strcasecmp(type, "spinner") == 0) {
+        spinner_t *sp = spinner_find(st, id);
+        if (sp) { opacity = &sp->opacity; anim = &sp->anim; }
+    } else {
+        send_response(st, client_idx, create_response("error", "unknown type"));
+        return -1;
+    }
+
+    if (!anim) {
+        send_response(st, client_idx, create_response("error", "element not found"));
+        return -1;
+    }
+
+    float from = fclamp(get_float(args, "from", *opacity), 0.0f, 1.0f);
+    float to   = fclamp(get_float(args, "to",   1.0f),     0.0f, 1.0f);
+    int   dur  = get_int(args, "duration", 300);
+    if (dur < 0) dur = 0;
+
+    int repeat = cJSON_IsTrue(cJSON_GetObjectItem(args, "repeat"));
+
+    *opacity            = from;
+    anim->active        = 1;
+    anim->from          = from;
+    anim->to            = to;
+    anim->duration_ms   = (uint32_t)dur;
+    anim->start_ms      = now_ms();
+    anim->easing        = get_easing(args, "easing", EASE_OUT);
+    anim->repeat        = repeat;
+    /* repeat ping-pongs forever, so an end action would never fire */
+    anim->remove_on_end = repeat ? 0
+                        : cJSON_IsTrue(cJSON_GetObjectItem(args, "remove_on_end"));
+
+    st->needs_render = 1;
+    send_response(st, client_idx, create_response("ok", NULL));
+    return 0;
+}
+
+/* ------------------------------------------------------------------------
+ * Spinner: an Apple-style rotating boot indicator.
+ *   {"cmd":"spinner","id":0,"x":-1,"y":-1,"radius":40,"color":"#ffffff","period":900}
+ *   {"cmd":"spinner","id":0,"hidden":true}                  configure, stay hidden
+ *   {"cmd":"spinner","id":0,"action":"hide"}
+ *   {"cmd":"spinner","id":0,"action":"show_animated","duration":300}
+ *   {"cmd":"spinner","id":0,"action":"hide_animated","duration":300}
+ *
+ * A spinner's slot survives "hide": a later show that omits x/y/radius/...
+ * keeps the previously configured values; only fields present change.
+ * "hidden":true configures the spinner without displaying it, so it can be
+ * set up once at startup and later revealed with show_animated.
+ * ------------------------------------------------------------------------ */
+static int cmd_spinner(splash_state_t *st, cJSON *args, int client_idx) {
+    int id = get_int(args, "id", -1);
+    if (id < 0) {
+        send_response(st, client_idx, create_response("error", "missing id"));
+        return -1;
+    }
+
+    const char *action = get_string(args, "action", NULL);
+
+    /* --- hide: stop rendering immediately, keep the configuration --- */
+    if (action && strcasecmp(action, "hide") == 0) {
+        spinner_t *sp = spinner_find(st, id);
+        if (sp) {
+            sp->active = 0;
+            sp->anim.active = 0;
+        }
+        st->needs_render = 1;
+        send_response(st, client_idx, create_response("ok", NULL));
+        return 0;
+    }
+
+    /* --- hide_animated: fade opacity to 0, then stop rendering --- */
+    if (action && strcasecmp(action, "hide_animated") == 0) {
+        spinner_t *sp = spinner_find(st, id);
+        if (!sp || !sp->active) {
+            if (sp) sp->active = 0;
+            send_response(st, client_idx, create_response("ok", NULL));
+            return 0;
+        }
+        int dur = get_int(args, "duration", 300);
+        if (dur < 0) dur = 0;
+        sp->anim.active        = 1;
+        sp->anim.from          = sp->opacity;
+        sp->anim.to            = 0.0f;
+        sp->anim.duration_ms   = (uint32_t)dur;
+        sp->anim.start_ms      = now_ms();
+        sp->anim.easing        = get_easing(args, "easing", EASE_IN_OUT);
+        sp->anim.repeat        = 0;
+        sp->anim.remove_on_end = 1;
+        st->needs_render = 1;
+        send_response(st, client_idx, create_response("ok", NULL));
+        return 0;
+    }
+
+    /* --- show / show_animated / configure --- */
+    spinner_t *sp = spinner_find(st, id);
+    int fresh = 0;
+    if (!sp) { sp = spinner_alloc(st); fresh = 1; }
+    if (!sp) {
+        send_response(st, client_idx, create_response("error", "no slots"));
+        return -1;
+    }
+
+    if (fresh) {
+        /* brand-new spinner: JSON values or sane defaults */
+        sp->id        = id;
+        sp->x         = get_int(args, "x", -1);
+        sp->y         = get_int(args, "y", -1);
+        sp->radius    = get_int(args, "radius", 36);
+        sp->spokes    = get_int(args, "spokes", 12);
+        sp->color     = get_color(args, "color", rgb(255, 255, 255));
+        sp->period_ms = (uint32_t)get_int(args, "period", 900);
+    } else {
+        /* existing spinner: keep every field the caller omits */
+        sp->x         = get_int(args, "x", sp->x);
+        sp->y         = get_int(args, "y", sp->y);
+        sp->radius    = get_int(args, "radius", sp->radius);
+        sp->spokes    = get_int(args, "spokes", sp->spokes);
+        sp->color     = get_color(args, "color", sp->color);
+        sp->period_ms = (uint32_t)get_int(args, "period", (int)sp->period_ms);
+    }
+
+    sp->start_ms = now_ms();
+
+    int animated = (action && strcasecmp(action, "show_animated") == 0);
+    int hidden   = cJSON_IsTrue(cJSON_GetObjectItem(args, "hidden"));
+
+    if (animated) {
+        /* fade in from nothing */
+        int dur = get_int(args, "duration", 300);
+        if (dur < 0) dur = 0;
+        sp->active             = 1;
+        sp->opacity            = 0.0f;
+        sp->anim.active        = 1;
+        sp->anim.from          = 0.0f;
+        sp->anim.to            = 1.0f;
+        sp->anim.duration_ms   = (uint32_t)dur;
+        sp->anim.start_ms      = now_ms();
+        sp->anim.easing        = get_easing(args, "easing", EASE_IN_OUT);
+        sp->anim.repeat        = 0;
+        sp->anim.remove_on_end = 0;
+    } else if (hidden) {
+        /* configured, but not displayed - reveal later with show_animated */
+        sp->active      = 0;
+        sp->anim.active = 0;
+        sp->opacity     = get_float(args, "opacity", 1.0f);
+    } else {
+        /* plain show */
+        sp->active      = 1;
+        sp->anim.active = 0;
+        sp->opacity     = get_float(args, "opacity", 1.0f);
+    }
+
+    st->needs_render = 1;
     send_response(st, client_idx, create_response("ok", NULL));
     return 0;
 }
@@ -487,6 +764,8 @@ static const cmd_entry_t cmd_table[] = {
     {"progress", cmd_progress},
     {"update_progress", cmd_update_progress},
     {"hide_progress", cmd_hide_progress},
+    {"animate", cmd_animate},
+    {"spinner", cmd_spinner},
     {"ready", cmd_ready},
     {NULL, NULL}
 };
@@ -518,7 +797,6 @@ static int process_single_cmd(splash_state_t *st, cJSON *cmd_obj, int client_idx
 /* Process batch (array or single object) - used by both socket and startup */
 int process_json_batch(splash_state_t *st, cJSON *root, int client_idx) {
     if (cJSON_IsArray(root)) {
-        /* Batch mode */
         int count = cJSON_GetArraySize(root);
         int errors = 0;
 
@@ -537,7 +815,6 @@ int process_json_batch(splash_state_t *st, cJSON *root, int client_idx) {
         return errors > 0 ? -1 : 0;
 
     } else if (cJSON_IsObject(root)) {
-        /* Single command */
         return process_single_cmd(st, root, client_idx);
     }
 
@@ -549,6 +826,9 @@ int process_json_batch(splash_state_t *st, cJSON *root, int client_idx) {
 
 /* Entry point from socket */
 int handle_json_command(splash_state_t *st, const char *json_str, int client_idx) {
+    /* Any command from any client pets the watchdog. */
+    st->last_activity_ms = now_ms();
+
     cJSON *root = cJSON_Parse(json_str);
     if (!root) {
         send_response(st, client_idx, create_response("error", "invalid json"));

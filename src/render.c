@@ -2,12 +2,11 @@
  * render.c - Frame rendering and drawing primitives
  *
  * Rounded geometry (progress bars + RECT elements) is rendered with a
- * signed-distance field. One shared routine means the track, the fill and
- * the border are always the *same* curve, so they nest pixel-perfectly,
- * every edge is anti-aliased, and gradients + soft shadows come for free.
+ * signed-distance field. The same SDF toolkit also draws the boot spinner.
+ * Every element carries an `opacity` multiplier, applied by scaling colour
+ * alpha (solid shapes) or sample alpha (images) so animations fade cleanly.
  *
- * Images are resampled with a proper separable-quality kernel
- * (Lanczos-3 / Mitchell bicubic / bilinear) instead of nearest-neighbour.
+ * Images are resampled with a quality kernel (Lanczos-3 / Mitchell / linear).
  */
 
 #include "splash.h"
@@ -74,23 +73,13 @@ static inline uint32_t paint_at(const paint_t *p, float u, float v) {
     return lerp_color(p->color0, p->color1, t);
 }
 
-/* Convenience: a solid paint from a single colour. */
-static inline paint_t paint_solid(uint32_t c) {
-    paint_t p;
-    p.color0 = c;
-    p.color1 = c;
-    p.gradient = GRAD_NONE;
-    return p;
-}
-
 /* ========================================================================
  * Anti-aliased Rounded Rectangle (signed distance field)
  * ======================================================================== */
 
 /* Signed distance from (px,py) to a rounded rectangle.
  * Box centred at (cx,cy), half-extents (hx,hy), corner radius r.
- * Negative inside, positive outside, zero exactly on the edge.
- * sqrtf() is only evaluated inside the four corner quadrants. */
+ * Negative inside, positive outside, zero exactly on the edge. */
 static inline float sdf_round_rect(float px, float py,
                                    float cx, float cy,
                                    float hx, float hy, float r) {
@@ -147,7 +136,7 @@ void draw_round_rect(drm_buffer_t *buf, float x, float y, float w, float h,
         for (int px = x0; px < x1; px++, line++) {
             float fx = (float)px + 0.5f;
             float d  = sdf_round_rect(fx, fy, cx, cy, hx, hy, radius);
-            float cov = 0.5f - d;                  /* 1px linear edge ramp */
+            float cov = 0.5f - d;
             if (cov <= 0.0f) continue;
             uint32_t c = grad ? paint_at(paint, (fx - x) * inv_w, v)
                               : paint->color0;
@@ -179,18 +168,13 @@ void draw_round_rect_outline(drm_buffer_t *buf, float x, float y, float w, float
         float fy = (float)py + 0.5f;
         for (int px = x0; px < x1; px++, line++) {
             float d = sdf_round_rect((float)px + 0.5f, fy, cx, cy, hx, hy, radius);
-            /* distance to the stroke band that occupies d in [-border_width, 0] */
             float band = fabsf(d + half_bw) - half_bw;
             blend_coverage(line, color, 0.5f - band);
         }
     }
 }
 
-/* Filled rounded rectangle revealed left-to-right up to `fill_w`.
- *
- * The shape - and the corner radius - is always the full rectangle; only
- * how much of it is shown changes. The gradient is anchored to the full
- * shape, so it does not slide around as the bar fills. */
+/* Filled rounded rectangle revealed left-to-right up to `fill_w`. */
 void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, float h,
                               float radius, float fill_w, const paint_t *paint) {
     if (w <= 0.0f || h <= 0.0f || fill_w <= 0.0f) return;
@@ -203,7 +187,7 @@ void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, floa
     float cx = x + hx,   cy = y + hy;
     float inv_w = 1.0f / w, inv_h = 1.0f / h;
     int grad = paint->gradient;
-    float clip_edge = x + fill_w;          /* absolute x of the soft right edge */
+    float clip_edge = x + fill_w;
 
     int x0 = clamp((int)floorf(x),                            0, (int)buf->width);
     int y0 = clamp((int)floorf(y),                            0, (int)buf->height);
@@ -221,7 +205,6 @@ void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, floa
             if (cov <= 0.0f) continue;
             if (cov > 1.0f) cov = 1.0f;
             if (!full) {
-                /* soft 1px vertical cut at the progress edge */
                 float hmask = clip_edge - (float)px;
                 if (hmask <= 0.0f) continue;
                 if (hmask < 1.0f) cov *= hmask;
@@ -233,10 +216,7 @@ void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, floa
     }
 }
 
-/* Soft drop shadow shaped like a rounded rectangle.
- *
- * The shadow is the same SDF shape with a smooth falloff over `blur`
- * pixels. Draw it BEFORE the element, offset by (dx,dy). */
+/* Soft drop shadow shaped like a rounded rectangle. */
 void draw_round_rect_shadow(drm_buffer_t *buf, float x, float y, float w, float h,
                             float radius, float blur, uint32_t color) {
     if (w <= 0.0f || h <= 0.0f) return;
@@ -257,24 +237,91 @@ void draw_round_rect_shadow(drm_buffer_t *buf, float x, float y, float w, float 
         float fy = (float)py + 0.5f;
         for (int px = x0; px < x1; px++, line++) {
             float d = sdf_round_rect((float)px + 0.5f, fy, cx, cy, hx, hy, radius);
-            float cov = (blur - d) * inv;            /* 1 well inside, 0 outside */
+            float cov = (blur - d) * inv;
             if (cov <= 0.0f) continue;
             if (cov > 1.0f) cov = 1.0f;
-            cov = cov * cov * (3.0f - 2.0f * cov);   /* smoothstep falloff */
+            cov = cov * cov * (3.0f - 2.0f * cov);
             blend_coverage(line, color, cov);
         }
     }
 }
 
 /* ========================================================================
- * Image Resampling
+ * Boot Spinner
  *
- * draw_image() is a direct resampler: each destination pixel is a weighted
- * sum of source texels. When the image is minified the filter is widened
- * by the scale factor, so downscaling averages instead of aliasing.
+ * A ring of tapered "spokes". Each spoke is a capsule (a fully rounded
+ * rectangle) drawn with the SDF toolkit by rotating the query point into
+ * the spoke's local frame. Brightness ramps around the ring; the whole
+ * ring rotates continuously, so the bright spoke sweeps around like the
+ * Apple boot indicator.
  * ======================================================================== */
 
-/* Resampling kernel weight at signed offset x, for the chosen filter. */
+void draw_spinner(drm_buffer_t *buf, spinner_t *sp, uint64_t now) {
+    if (!sp->active || sp->opacity <= 0.0f || sp->radius <= 0) return;
+
+    int N = sp->spokes > 0 ? sp->spokes : 12;
+    if (N < 3)  N = 3;
+    if (N > 64) N = 64;
+
+    float cx = (sp->x < 0) ? (float)buf->width  * 0.5f : (float)sp->x;
+    float cy = (sp->y < 0) ? (float)buf->height * 0.5f : (float)sp->y;
+
+    float r_out = (float)sp->radius;
+    float r_in  = r_out * 0.45f;
+    float W     = r_out * 0.24f;          /* spoke width */
+    if (W < 2.0f) W = 2.0f;
+    float half_len = (r_out - r_in) * 0.5f;
+    float half_w   = W * 0.5f;
+    float mid_r    = (r_out + r_in) * 0.5f;
+
+    uint32_t period = sp->period_ms > 0 ? sp->period_ms : 900;
+    float rot = 2.0f * (float)M_PI *
+                ((float)(uint32_t)((now - sp->start_ms) % period) / (float)period);
+
+    uint8_t base_a = sp->color >> 24;
+    float   op     = sp->opacity;
+    float   step   = 2.0f * (float)M_PI / (float)N;
+
+    for (int i = 0; i < N; i++) {
+        float ang = rot + (float)i * step;
+        float ca = cosf(ang), sa = sinf(ang);
+
+        /* brightness ramps around the ring; brightest spoke rotates */
+        float bright = 0.15f + 0.85f * ((float)i / (float)(N - 1));
+        uint32_t a = (uint32_t)((float)base_a * bright * op + 0.5f);
+        if (a == 0) continue;
+        uint32_t col = (sp->color & 0x00FFFFFFu) | (a << 24);
+
+        float scx = cx + ca * mid_r;      /* spoke centre */
+        float scy = cy + sa * mid_r;
+
+        /* axis-aligned bounding box of this rotated capsule */
+        float ex = (half_len > half_w ? half_len : half_w);
+        int x0 = clamp((int)floorf(scx - ex), 0, (int)buf->width);
+        int y0 = clamp((int)floorf(scy - ex), 0, (int)buf->height);
+        int x1 = clamp((int)ceilf (scx + ex), 0, (int)buf->width);
+        int y1 = clamp((int)ceilf (scy + ex), 0, (int)buf->height);
+
+        for (int py = y0; py < y1; py++) {
+            uint32_t *line = (uint32_t *)(buf->map + py * buf->pitch + x0 * 4);
+            float dy = (float)py + 0.5f - scy;
+            for (int px = x0; px < x1; px++, line++) {
+                float dx = (float)px + 0.5f - scx;
+                /* rotate (dx,dy) by -ang into the spoke's local frame */
+                float lx =  dx * ca + dy * sa;
+                float ly = -dx * sa + dy * ca;
+                float d = sdf_round_rect(lx, ly, 0.0f, 0.0f,
+                                         half_len, half_w, half_w);
+                blend_coverage(line, col, 0.5f - d);
+            }
+        }
+    }
+}
+
+/* ========================================================================
+ * Image Resampling
+ * ======================================================================== */
+
 static float kernel_weight(float x, int filter) {
     x = fabsf(x);
     switch (filter) {
@@ -310,15 +357,17 @@ static float kernel_radius(int filter) {
 }
 
 void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
-                const uint8_t *rgba, int img_w, int img_h, int filter) {
+                const uint8_t *rgba, int img_w, int img_h,
+                int filter, float opacity) {
     if (!rgba || img_w <= 0 || img_h <= 0 || w <= 0 || h <= 0) return;
+    if (opacity <= 0.0f) return;
 
     int x0 = clamp(x, 0, (int)buf->width);
     int y0 = clamp(y, 0, (int)buf->height);
     int x1 = clamp(x + w, 0, (int)buf->width);
     int y1 = clamp(y + h, 0, (int)buf->height);
 
-    /* Fast path: nearest-neighbour, or any 1:1 blit (resampling is identity). */
+    /* Fast path: nearest-neighbour, or any 1:1 blit. */
     if (filter == IMG_NEAREST || (w == img_w && h == img_h)) {
         float sx = (float)img_w / (float)w;
         float sy = (float)img_h / (float)h;
@@ -329,22 +378,24 @@ void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
             for (int col = x0; col < x1; col++) {
                 int sxc = clamp((int)((col - x) * sx), 0, img_w - 1);
                 const uint8_t *p = srow + sxc * 4;
-                blend_pixel(dst++, argb(p[3], p[0], p[1], p[2]));
+                uint8_t a = p[3];
+                if (opacity < 1.0f) a = (uint8_t)((float)a * opacity + 0.5f);
+                blend_pixel(dst++, argb(a, p[0], p[1], p[2]));
             }
         }
         return;
     }
 
-    float sx = (float)img_w / (float)w;       /* source texels per dst pixel */
+    float sx = (float)img_w / (float)w;
     float sy = (float)img_h / (float)h;
-    float supx = sx > 1.0f ? sx : 1.0f;       /* widen filter when minifying */
+    float supx = sx > 1.0f ? sx : 1.0f;
     float supy = sy > 1.0f ? sy : 1.0f;
     float base_r = kernel_radius(filter);
     float radx = base_r * supx, rady = base_r * supy;
     float inv_supx = 1.0f / supx, inv_supy = 1.0f / supy;
 
     for (int row = y0; row < y1; row++) {
-        float cy = ((float)(row - y) + 0.5f) * sy - 0.5f;   /* source coord */
+        float cy = ((float)(row - y) + 0.5f) * sy - 0.5f;
         int iy0 = (int)floorf(cy - rady);
         int iy1 = (int)ceilf (cy + rady);
         uint32_t *dst = (uint32_t *)(buf->map + row * buf->pitch + x0 * 4);
@@ -365,7 +416,7 @@ void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
                     float wgt = wx * wy;
                     if (wgt == 0.0f) continue;
                     const uint8_t *p = srow + clamp(ix, 0, img_w - 1) * 4;
-                    float pa = p[3] * (1.0f / 255.0f);   /* premultiply alpha */
+                    float pa = p[3] * (1.0f / 255.0f);
                     ar += p[0] * pa * wgt;
                     ag += p[1] * pa * wgt;
                     ab += p[2] * pa * wgt;
@@ -375,9 +426,10 @@ void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
             }
             if (ws <= 0.0f || aa <= 0.0f) continue;
 
-            float oa = aa / ws;                  /* resampled alpha 0..255 */
+            float oa = aa / ws;
+            if (opacity < 1.0f) oa *= opacity;
             if (oa < 0.5f) continue;
-            float k = 255.0f / aa;               /* un-premultiply */
+            float k = 255.0f / aa;
             int rr = clamp((int)(ar * k + 0.5f), 0, 255);
             int gg = clamp((int)(ag * k + 0.5f), 0, 255);
             int bb = clamp((int)(ab * k + 0.5f), 0, 255);
@@ -440,7 +492,55 @@ void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
  * Progress Bar Drawing
  * ======================================================================== */
 
+/* Indeterminate progress: a soft raised-cosine highlight band that sweeps
+ * across the track. `phase` (0..1) is the sweep position; the band enters
+ * from the left edge and exits past the right. */
+void draw_round_rect_sweep(drm_buffer_t *buf, float x, float y, float w, float h,
+                           float radius, const paint_t *paint, float phase) {
+    if (w <= 0.0f || h <= 0.0f) return;
+    radius = clamp_radius(w, h, radius);
+
+    float hx = w * 0.5f, hy = h * 0.5f;
+    float cx = x + hx,   cy = y + hy;
+    float inv_w = 1.0f / w, inv_h = 1.0f / h;
+    int grad = paint->gradient;
+
+    float band = w * 0.40f;               /* highlight band width */
+    if (band < 8.0f) band = 8.0f;
+    float half = band * 0.5f;
+    float center = -half + phase * (w + band);   /* sweeps fully on then off */
+
+    int x0 = clamp((int)floorf(x),     0, (int)buf->width);
+    int y0 = clamp((int)floorf(y),     0, (int)buf->height);
+    int x1 = clamp((int)ceilf (x + w), 0, (int)buf->width);
+    int y1 = clamp((int)ceilf (y + h), 0, (int)buf->height);
+
+    for (int py = y0; py < y1; py++) {
+        uint32_t *line = (uint32_t *)(buf->map + py * buf->pitch + x0 * 4);
+        float fy = (float)py + 0.5f;
+        float v  = (fy - y) * inv_h;
+        for (int px = x0; px < x1; px++, line++) {
+            float fx = (float)px + 0.5f;
+            float d  = sdf_round_rect(fx, fy, cx, cy, hx, hy, radius);
+            float cov = 0.5f - d;
+            if (cov <= 0.0f) continue;
+            if (cov > 1.0f) cov = 1.0f;
+
+            float bd = (fx - center) / half;        /* -1..1 inside the band */
+            if (bd <= -1.0f || bd >= 1.0f) continue;
+            float inten = 0.5f + 0.5f * cosf(bd * (float)M_PI);
+
+            uint32_t c = grad ? paint_at(paint, (fx - x) * inv_w, v)
+                              : paint->color0;
+            blend_coverage(line, c, cov * inten);
+        }
+    }
+}
+
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
+    float op = pb->opacity;
+    if (op <= 0.0f) return;
+
     /* Resolve on-screen position from anchor + alignment */
     int x, y;
 
@@ -470,26 +570,40 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
     /* 0. Soft drop shadow of the whole bar */
     if (pb->shadow) {
         draw_round_rect_shadow(buf, fx + pb->shadow_dx, fy + pb->shadow_dy,
-                               fw, fh, r, (float)pb->shadow_blur, pb->shadow_color);
+                               fw, fh, r, (float)pb->shadow_blur,
+                               apply_opacity(pb->shadow_color, op));
     }
 
     /* 1. Background track */
-    paint_t track = paint_solid(pb->bg_color);
+    paint_t track = { apply_opacity(pb->bg_color, op),
+                      apply_opacity(pb->bg_color, op), GRAD_NONE };
     draw_round_rect(buf, fx, fy, fw, fh, r, &track);
 
-    /* 2. Progress fill: the track's inner shape, revealed left-to-right.
-     *    Insetting a rounded rect by `bw` also shrinks its radius by `bw`,
-     *    so the fill nests exactly inside the border with no slivers. */
-    float value = fclamp(pb->value, 0.0f, 1.0f);
-    if (value > 0.0f) {
-        float in_x = fx + bw;
-        float in_y = fy + bw;
-        float in_w = fw - 2.0f * bw;
-        float in_h = fh - 2.0f * bw;
-        float in_r = r - bw;
-        if (in_r < 0.0f) in_r = 0.0f;
+    /* 2. Progress fill */
+    float in_x = fx + bw;
+    float in_y = fy + bw;
+    float in_w = fw - 2.0f * bw;
+    float in_h = fh - 2.0f * bw;
+    float in_r = r - bw;
+    if (in_r < 0.0f) in_r = 0.0f;
+
+    if (pb->indeterminate) {
+        /* Sweeping highlight band - no measurable value. */
         if (in_w > 0.0f && in_h > 0.0f) {
-            paint_t fill = { pb->bar_color, pb->bar_color2, pb->bar_gradient };
+            uint32_t period = pb->indet_period_ms > 0 ? pb->indet_period_ms : 1100;
+            float phase = (float)(uint32_t)((now_ms() - pb->indet_start_ms) % period)
+                          / (float)period;
+            paint_t fill = { apply_opacity(pb->bar_color,  op),
+                             apply_opacity(pb->bar_color2, op),
+                             pb->bar_gradient };
+            draw_round_rect_sweep(buf, in_x, in_y, in_w, in_h, in_r, &fill, phase);
+        }
+    } else {
+        float value = fclamp(pb->value, 0.0f, 1.0f);
+        if (value > 0.0f && in_w > 0.0f && in_h > 0.0f) {
+            paint_t fill = { apply_opacity(pb->bar_color,  op),
+                             apply_opacity(pb->bar_color2, op),
+                             pb->bar_gradient };
             draw_round_rect_progress(buf, in_x, in_y, in_w, in_h,
                                      in_r, in_w * value, &fill);
         }
@@ -497,16 +611,18 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 
     /* 3. Border last, on top of track + fill */
     if (bw > 0.0f) {
-        draw_round_rect_outline(buf, fx, fy, fw, fh, r, bw, pb->border_color);
+        draw_round_rect_outline(buf, fx, fy, fw, fh, r, bw,
+                                apply_opacity(pb->border_color, op));
     }
 
-    /* 4. Percentage text */
-    if (pb->show_percent && pb->value > 0.0f) {
+    /* 4. Percentage text (only meaningful for a determinate bar) */
+    if (!pb->indeterminate && pb->show_percent && pb->value > 0.0f) {
         char percent_str[8];
         snprintf(percent_str, sizeof(percent_str), "%d%%", (int)(pb->value * 100));
 
         text_element_t te = {0};
         te.active    = 1;
+        te.opacity   = op;
         strncpy(te.text, percent_str, sizeof(te.text) - 1);
         te.x         = x + pb->w / 2;
         te.y         = y + pb->h / 2;
@@ -525,6 +641,8 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 
 void draw_rect_element(drm_buffer_t *buf, rect_element_t *re) {
     if (re->w <= 0 || re->h <= 0) return;
+    float op = re->opacity;
+    if (op <= 0.0f) return;
 
     float fx = (float)re->x, fy = (float)re->y;
     float fw = (float)re->w, fh = (float)re->h;
@@ -533,21 +651,24 @@ void draw_rect_element(drm_buffer_t *buf, rect_element_t *re) {
     /* 0. Soft drop shadow */
     if (re->shadow) {
         draw_round_rect_shadow(buf, fx + re->shadow_dx, fy + re->shadow_dy,
-                               fw, fh, r, (float)re->shadow_blur, re->shadow_color);
+                               fw, fh, r, (float)re->shadow_blur,
+                               apply_opacity(re->shadow_color, op));
     }
 
-    /* A rect is filled unless it is explicitly outline-only
-     * (fill == 0 together with a positive border width). */
+    /* A rect is filled unless it is explicitly outline-only. */
     int do_fill = re->fill || re->border_width <= 0;
 
     if (do_fill) {
-        paint_t paint = { re->color, re->grad_color, re->grad_dir };
+        paint_t paint = { apply_opacity(re->color,      op),
+                          apply_opacity(re->grad_color, op),
+                          re->grad_dir };
         draw_round_rect(buf, fx, fy, fw, fh, r, &paint);
     }
 
     if (re->border_width > 0)
         draw_round_rect_outline(buf, fx, fy, fw, fh, r,
-                                (float)re->border_width, re->border_color);
+                                (float)re->border_width,
+                                apply_opacity(re->border_color, op));
 }
 
 /* ========================================================================
@@ -556,16 +677,28 @@ void draw_rect_element(drm_buffer_t *buf, rect_element_t *re) {
 
 void render_frame(splash_state_t *st) {
     drm_buffer_t *buf = &st->drm.buf[st->drm.front_buf ^ 1];
+    uint64_t now = now_ms();
 
     draw_filled_rect(buf, 0, 0, buf->width, buf->height, st->bg_color);
 
+    /* Outgoing background, underneath, during a crossfade */
+    if (st->bg_prev_loaded && st->bg_prev.rgba) {
+        int dx, dy, dw, dh;
+        calculate_scaled_rect(buf->width, buf->height,
+            st->bg_prev.w, st->bg_prev.h,
+            st->bg_prev_scale_mode, st->bg_prev_custom_scale, &dx, &dy, &dw, &dh);
+        draw_image(buf, dx, dy, dw, dh, st->bg_prev.rgba,
+                   st->bg_prev.w, st->bg_prev.h, st->bg_prev_filter, 1.0f);
+    }
+
+    /* Current background (fades in over the previous one during crossfade) */
     if (st->bg_loaded && st->bg_image.rgba) {
         int dx, dy, dw, dh;
         calculate_scaled_rect(buf->width, buf->height,
             st->bg_image.w, st->bg_image.h,
             st->bg_scale_mode, st->bg_custom_scale, &dx, &dy, &dw, &dh);
         draw_image(buf, dx, dy, dw, dh, st->bg_image.rgba,
-                   st->bg_image.w, st->bg_image.h, st->bg_filter);
+                   st->bg_image.w, st->bg_image.h, st->bg_filter, st->bg_opacity);
     }
 
     for (int i = 0; i < MAX_IMAGE_OVERLAYS; i++) {
@@ -586,7 +719,8 @@ void render_frame(splash_state_t *st) {
         else if (ov->valign == VALIGN_BOTTOM)
             y -= h;
 
-        draw_image(buf, x, y, w, h, ov->img.rgba, ov->img.w, ov->img.h, ov->filter);
+        draw_image(buf, x, y, w, h, ov->img.rgba, ov->img.w, ov->img.h,
+                   ov->filter, ov->opacity);
     }
 
     for (int i = 0; i < MAX_RECTANGLES; i++) {
@@ -602,6 +736,11 @@ void render_frame(splash_state_t *st) {
     for (int i = 0; i < MAX_TEXT_ELEMENTS; i++) {
         if (st->texts[i].active)
             draw_text_element(buf, &st->texts[i]);
+    }
+
+    for (int i = 0; i < MAX_SPINNERS; i++) {
+        if (st->spinners[i].active)
+            draw_spinner(buf, &st->spinners[i], now);
     }
 
     drm_flip(&st->drm);

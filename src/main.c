@@ -9,6 +9,30 @@
 #include <unistd.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
+
+/* Set by SIGTERM/SIGINT so the main loop can exit and run its cleanup
+ * (drm_cleanup restores the saved CRTC - skipping it leaves the screen
+ * showing a stale splash buffer). */
+static volatile sig_atomic_t g_terminate = 0;
+
+static void on_signal(int sig) {
+    (void)sig;
+    g_terminate = 1;
+}
+
+/* Install termination handlers and ignore SIGPIPE (a client vanishing
+ * mid-write must never kill the daemon). */
+static void install_signal_handlers(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = on_signal;
+    /* No SA_RESTART: a signal should interrupt poll() so the loop wakes. */
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGHUP,  &sa, NULL);
+    signal(SIGPIPE, SIG_IGN);
+}
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
@@ -19,6 +43,7 @@ static void print_usage(const char *prog) {
         "Options:\n"
         "  --config <file|json>   Load configuration (fonts, defaults)\n"
         "  --cmds <file|json>     Execute initial commands on startup\n"
+        "  --timeout <seconds>    Exit if idle (no command) for this long\n"
         "  -q, --quiet            Suppress all output\n"
         "  --debug                Enable debug output\n"
         "  -v, --version          Show version and exit\n"
@@ -44,23 +69,23 @@ static int is_json_string(const char *str) {
     return (*str == '{' || *str == '[');
 }
 
+/* Robust whole-file read: checks fseek/ftell/fread so a stat error or a
+ * short read can never leave the buffer unterminated. */
 static char* read_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    
-    fseek(f, 0, SEEK_END);
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    char *buf = malloc(size + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    
-    fread(buf, 1, size, f);
-    buf[size] = '\0';
+    if (size < 0)                   { fclose(f); return NULL; }
+    rewind(f);
+
+    char *buf = malloc((size_t)size + 1);
+    if (!buf)                       { fclose(f); return NULL; }
+
+    size_t got = fread(buf, 1, (size_t)size, f);
     fclose(f);
+    buf[got] = '\0';                /* terminate at however much was read */
     return buf;
 }
 
@@ -153,6 +178,7 @@ int main(int argc, char **argv) {
 
     splash_state_t st = {0};
     st.bg_color = 0;
+    st.bg_opacity = 1.0f;          /* fully opaque until a crossfade runs */
     st.server_fd = -1;
     for (int i = 0; i < MAX_SOCKET_CLIENTS; i++) {
         st.client_fds[i] = -1;
@@ -164,6 +190,10 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(argv[i], "--cmds") == 0 && i + 1 < argc) {
             cmds_arg = argv[++i];
+        }
+        else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
+            int secs = atoi(argv[++i]);
+            if (secs > 0) st.watchdog_ms = (uint32_t)secs * 1000u;
         }
         else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
             st.quiet = 1;
@@ -205,6 +235,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    install_signal_handlers();
+
     st.running = 1;
     st.needs_render = 1;
     st.frozen = 0;
@@ -215,31 +247,68 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Pick up any animation/spinner started by the startup commands, so the
+     * first poll already uses the short (RENDER_FPS) timeout. */
+    st.anim_running = anim_tick(&st, now_ms());
+    st.last_activity_ms = now_ms();
+
     if (st.needs_render) {
         render_frame(&st);
     }
 
-    while (st.running) {
+    while (st.running && !g_terminate) {
         struct pollfd fds[1 + MAX_SOCKET_CLIENTS];
         int nfds = 0;
         
         socket_poll(&st, fds, &nfds);
 
-        int timeout = st.frozen ? -1 : (1000 / RENDER_FPS);
+        /* Block indefinitely when idle; tick at RENDER_FPS while an
+         * animation or spinner is running. The watchdog, when armed,
+         * caps the wait so the inactivity deadline is always honoured. */
+        int timeout = (st.frozen || !st.anim_running)
+                        ? -1 : (1000 / RENDER_FPS);
+
+        if (st.watchdog_ms > 0 && !st.frozen) {
+            uint64_t since = now_ms() - st.last_activity_ms;
+            int remain = (since >= st.watchdog_ms)
+                           ? 0 : (int)(st.watchdog_ms - since);
+            if (timeout < 0 || remain < timeout)
+                timeout = remain;
+        }
+
         int ret = poll(fds, nfds, timeout);
 
         if (ret < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) continue;   /* signal: re-check loop guard */
             perror("poll");
             break;
         }
 
         socket_process(&st, fds, nfds);
 
+        /* Watchdog: exit if no command has arrived within the timeout, so
+         * a stuck boot script can never leave the splash up forever. */
+        if (st.watchdog_ms > 0 && !st.frozen &&
+            now_ms() - st.last_activity_ms >= st.watchdog_ms) {
+            if (st.debug)
+                fprintf(stderr, "[debug] watchdog: idle timeout, exiting\n");
+            break;
+        }
+
+        /* Advance animations on the monotonic clock. */
+        if (!st.frozen) {
+            st.anim_running = anim_tick(&st, now_ms());
+            if (st.anim_running)
+                st.needs_render = 1;
+        }
+
         if (!st.frozen && st.needs_render) {
             render_frame(&st);
         }
     }
+
+    if (st.debug && g_terminate)
+        fprintf(stderr, "[debug] caught termination signal, shutting down\n");
 
     socket_cleanup(&st);
     clear_all_elements(&st);

@@ -14,6 +14,7 @@ SOURCES = $(SRCDIR)/main.c \
           $(SRCDIR)/font.c \
           $(SRCDIR)/image.c \
           $(SRCDIR)/elements.c \
+          $(SRCDIR)/anim.c \
           $(SRCDIR)/socket.c \
           $(SRCDIR)/cmd.c \
           $(SRCDIR)/utils.c

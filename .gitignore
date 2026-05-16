@@ -54,5 +54,10 @@ dkms.conf
 # debug information files
 *.dwo
 
+objs
+objs/*.*
+objs/.*
+
 splash-drm
 splash-cli
+splash-ctl

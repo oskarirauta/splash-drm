@@ -5,7 +5,9 @@
  *   - sub-pixel accurate glyph positioning (stbtt_*Subpixel)
  *   - kerning between adjacent glyphs
  *   - UTF-8 decoding (so e.g. a, a, o render as single glyphs)
+ *   - multi-line text: '\n' splits the string into stacked lines
  *   - optional soft drop shadow (coverage buffer + separable box blur)
+ *   - opacity: the element's master alpha scales glyph + shadow
  *
  * stb_truetype already produces anti-aliased coverage bitmaps, so text AA
  * has always been present; these changes make it crisp and evenly spaced.
@@ -21,6 +23,9 @@
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+/* Upper bound on lines in one text element; bounds the coverage buffer. */
+#define MAX_TEXT_LINES 32
 
 static font_t g_fonts[MAX_FONTS];
 
@@ -165,10 +170,43 @@ static float measure_text_scaled(stbtt_fontinfo *info, float scale, const char *
     return x;
 }
 
+/* Advance width of a length-bounded slice (one line of a multi-line string). */
+static float measure_line_scaled(stbtt_fontinfo *info, float scale,
+                                 const char *text, int len) {
+    float x = 0.0f;
+    const char *p = text;
+    const char *end = text + len;
+    int prev = 0;
+
+    while (p < end) {
+        int cp = utf8_next(&p);
+        if (prev)
+            x += stbtt_GetCodepointKernAdvance(info, prev, cp) * scale;
+        int advance, lsb;
+        stbtt_GetCodepointHMetrics(info, cp, &advance, &lsb);
+        x += advance * scale;
+        prev = cp;
+    }
+    return x;
+}
+
 int text_width_font(const char *text, int font_slot) {
     font_t *f = get_font(font_slot);
     if (!f || !text) return 0;
-    return (int)(measure_text_scaled(f->info, f->scale, text) + 0.5f);
+
+    /* For multi-line text, report the widest line. */
+    float widest = 0.0f;
+    const char *start = text;
+    for (const char *s = text;; s++) {
+        if (*s == '\n' || *s == '\0') {
+            float lw = measure_line_scaled(f->info, f->scale,
+                                           start, (int)(s - start));
+            if (lw > widest) widest = lw;
+            if (*s == '\0') break;
+            start = s + 1;
+        }
+    }
+    return (int)(widest + 0.5f);
 }
 
 int text_height_font(int font_slot) {
@@ -263,12 +301,67 @@ static void box_blur(uint8_t *buf, int w, int h, int blur) {
 }
 
 /* ========================================================================
+ * Glyph Rasterisation
+ * ======================================================================== */
+
+/* Rasterise one line of text into the coverage buffer. Works purely in
+ * buffer coordinates: `pen_x` is the starting pen position, `baseline_y`
+ * the baseline row. Sub-pixel positioned and kerned. */
+static void rasterize_line(stbtt_fontinfo *info, float scale,
+                           uint8_t *cov, int cov_w, int cov_h,
+                           float pen_x, int baseline_y,
+                           const char *text, int len) {
+    const char *p = text;
+    const char *end = text + len;
+    float pen = pen_x;
+    int prev = 0;
+
+    while (p < end) {
+        int cp = utf8_next(&p);
+        if (prev)
+            pen += stbtt_GetCodepointKernAdvance(info, prev, cp) * scale;
+
+        int ix = (int)floorf(pen);
+        float shift = pen - (float)ix;         /* sub-pixel fraction */
+
+        int gw, gh, gxoff, gyoff;
+        unsigned char *bm = stbtt_GetCodepointBitmapSubpixel(
+            info, scale, scale, shift, 0.0f, cp, &gw, &gh, &gxoff, &gyoff);
+
+        if (bm) {
+            int gx = ix + gxoff;
+            int gy = baseline_y + gyoff;
+            for (int row = 0; row < gh; row++) {
+                int cy = gy + row;
+                if (cy < 0 || cy >= cov_h) continue;
+                const unsigned char *brow = bm + (size_t)row * gw;
+                uint8_t *crow = cov + (size_t)cy * cov_w;
+                for (int col = 0; col < gw; col++) {
+                    int cx = gx + col;
+                    if (cx < 0 || cx >= cov_w) continue;
+                    if (brow[col] > crow[cx]) crow[cx] = brow[col];
+                }
+            }
+            stbtt_FreeBitmap(bm, NULL);
+        }
+
+        int advance, lsb;
+        stbtt_GetCodepointHMetrics(info, cp, &advance, &lsb);
+        pen += advance * scale;
+        prev = cp;
+    }
+}
+
+/* ========================================================================
  * Text Rendering
  * ======================================================================== */
 
 void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
     font_t *f = get_font(te->font_slot);
     if (!f || !te->text[0]) return;
+
+    float op = te->opacity;
+    if (op <= 0.0f) return;
 
     stbtt_fontinfo *info = f->info;
     float scale = f->scale;
@@ -280,74 +373,76 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
     stbtt_GetFontVMetrics(info, &ascent, &descent, &line_gap);
     int asc_px  = (int)(ascent  * scale);
     int desc_px = (int)(descent * scale);
-    int th = asc_px - desc_px;
+    int th = asc_px - desc_px;                     /* single-line height */
+    int line_adv = th + (int)(line_gap * scale);   /* baseline-to-baseline */
+    if (line_adv < 1) line_adv = 1;
 
-    int tw = (int)(measure_text_scaled(info, scale, te->text) + 0.5f);
-    if (tw <= 0 || th <= 0) return;
+    /* Split the text into lines on '\n'. */
+    const char *line_ptr[MAX_TEXT_LINES];
+    int         line_len[MAX_TEXT_LINES];
+    int nlines = 0;
+    {
+        const char *start = te->text;
+        for (const char *s = te->text;; s++) {
+            if (*s == '\n' || *s == '\0') {
+                if (nlines < MAX_TEXT_LINES) {
+                    line_ptr[nlines] = start;
+                    line_len[nlines] = (int)(s - start);
+                    nlines++;
+                }
+                if (*s == '\0') break;
+                start = s + 1;
+            }
+        }
+    }
+    if (nlines == 0) return;
 
-    /* Alignment -> pen origin: x is the left pen position, y the baseline. */
-    int x = te->x;
-    if (te->align == ALIGN_CENTER)      x -= tw / 2;
-    else if (te->align == ALIGN_RIGHT)  x -= tw;
+    /* Measure: widest line + total block height. */
+    float lw[MAX_TEXT_LINES];
+    int   maxw = 0;
+    for (int i = 0; i < nlines; i++) {
+        lw[i] = measure_line_scaled(info, scale, line_ptr[i], line_len[i]);
+        int w = (int)(lw[i] + 0.5f);
+        if (w > maxw) maxw = w;
+    }
+    int block_h = (nlines - 1) * line_adv + th;
+    if (maxw <= 0 || block_h <= 0) return;
 
-    int y = te->y;
-    if (te->valign == VALIGN_MIDDLE)      y -= th / 2;
-    else if (te->valign == VALIGN_BOTTOM) y -= th;
-    y += asc_px;                                   /* baseline */
+    /* Block placement: valign positions the whole block, align positions
+     * each line within it (relative to the anchor point te->x). */
+    int block_x;                                   /* fb x of the buffer's left */
+    if      (te->align == ALIGN_CENTER) block_x = te->x - maxw / 2;
+    else if (te->align == ALIGN_RIGHT)  block_x = te->x - maxw;
+    else                                block_x = te->x;
 
-    /* The whole string is rasterised once into an 8-bit coverage buffer.
+    int block_y;                                   /* fb y of the block's top */
+    if      (te->valign == VALIGN_MIDDLE) block_y = te->y - block_h / 2;
+    else if (te->valign == VALIGN_BOTTOM) block_y = te->y - block_h;
+    else                                  block_y = te->y;
+
+    /* The whole block is rasterised once into an 8-bit coverage buffer.
      * It is composited twice: blurred + offset as the shadow, then sharp
      * in the text colour on top. `pad` leaves room for glyph overhang and
      * for the blur to spread into. */
     int pad = te->shadow ? ((te->shadow_blur > 0 ? te->shadow_blur : 0) + 3) : 3;
-    int cov_w = tw + 2 * pad;
-    int cov_h = th + 2 * pad;
-    int origin_x = x - pad;                        /* fb position of cov[0,0] */
-    int origin_y = (y - asc_px) - pad;
+    int cov_w = maxw + 2 * pad;
+    int cov_h = block_h + 2 * pad;
+    int origin_x = block_x - pad;                  /* fb position of cov[0,0] */
+    int origin_y = block_y - pad;
 
     uint8_t *cov = calloc((size_t)cov_w * cov_h, 1);
     if (!cov) return;
 
-    /* Rasterise glyphs with sub-pixel positioning + kerning. */
-    {
-        const char *p = te->text;
-        float pen = (float)x;
-        int prev = 0;
+    /* Rasterise every line into the shared coverage buffer. */
+    for (int i = 0; i < nlines; i++) {
+        float x_off;                               /* line's left within buffer */
+        if      (te->align == ALIGN_CENTER) x_off = pad + (maxw - lw[i]) * 0.5f;
+        else if (te->align == ALIGN_RIGHT)  x_off = pad + (maxw - lw[i]);
+        else                                x_off = pad;
 
-        while (*p) {
-            int cp = utf8_next(&p);
-            if (prev)
-                pen += stbtt_GetCodepointKernAdvance(info, prev, cp) * scale;
-
-            int ix = (int)floorf(pen);
-            float shift = pen - (float)ix;         /* sub-pixel fraction */
-
-            int gw, gh, gxoff, gyoff;
-            unsigned char *bm = stbtt_GetCodepointBitmapSubpixel(
-                info, scale, scale, shift, 0.0f, cp, &gw, &gh, &gxoff, &gyoff);
-
-            if (bm) {
-                int gx = ix + gxoff - origin_x;
-                int gy = y  + gyoff - origin_y;
-                for (int row = 0; row < gh; row++) {
-                    int cy = gy + row;
-                    if (cy < 0 || cy >= cov_h) continue;
-                    const unsigned char *brow = bm + (size_t)row * gw;
-                    uint8_t *crow = cov + (size_t)cy * cov_w;
-                    for (int col = 0; col < gw; col++) {
-                        int cx = gx + col;
-                        if (cx < 0 || cx >= cov_w) continue;
-                        if (brow[col] > crow[cx]) crow[cx] = brow[col];
-                    }
-                }
-                stbtt_FreeBitmap(bm, NULL);
-            }
-
-            int advance, lsb;
-            stbtt_GetCodepointHMetrics(info, cp, &advance, &lsb);
-            pen += advance * scale;
-            prev = cp;
-        }
+        int baseline = pad + asc_px + i * line_adv;
+        rasterize_line(info, scale, cov, cov_w, cov_h,
+                       x_off, baseline, line_ptr[i], line_len[i]);
     }
 
     /* Drop shadow: a blurred copy, composited first so it sits behind. */
@@ -359,13 +454,14 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
             composite_coverage(buf, sh, cov_w, cov_h,
                                origin_x + te->shadow_dx,
                                origin_y + te->shadow_dy,
-                               te->shadow_color);
+                               apply_opacity(te->shadow_color, op));
             free(sh);
         }
     }
 
     /* The text itself, sharp, on top. */
-    composite_coverage(buf, cov, cov_w, cov_h, origin_x, origin_y, te->color);
+    composite_coverage(buf, cov, cov_w, cov_h, origin_x, origin_y,
+                       apply_opacity(te->color, op));
 
     free(cov);
 }

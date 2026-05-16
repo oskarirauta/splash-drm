@@ -36,6 +36,7 @@
 #define MAX_PROGRESS_BARS 8
 #define MAX_RECTANGLES 16
 #define MAX_FONTS 5
+#define MAX_SPINNERS 4
 #define CMD_MAX_LEN 8192
 #define MAX_FONT_SIZE 128
 #define RENDER_FPS 30
@@ -61,6 +62,12 @@
 #define IMG_BILINEAR 1
 #define IMG_BICUBIC  2   /* Mitchell-Netravali */
 #define IMG_LANCZOS  3   /* Lanczos-3 (default) */
+
+/* Easing curves */
+#define EASE_LINEAR  0
+#define EASE_IN      1
+#define EASE_OUT     2
+#define EASE_IN_OUT  3
 
 /* ========================================================================
  * Alignment Constants
@@ -100,6 +107,14 @@ uint32_t parse_color(const char *str);
 /* ========================================================================
  * Pixel Blending
  * ======================================================================== */
+
+/* Scale a colour's alpha channel by a 0..1 opacity factor. */
+static inline uint32_t apply_opacity(uint32_t color, float opacity) {
+    if (opacity >= 1.0f) return color;
+    if (opacity <= 0.0f) return color & 0x00FFFFFFu;
+    uint32_t a = (uint32_t)((float)(color >> 24) * opacity + 0.5f);
+    return (color & 0x00FFFFFFu) | (a << 24);
+}
 
 static inline void blend_pixel(uint32_t *dst, uint32_t src) {
     uint8_t sa = src >> 24;
@@ -201,6 +216,17 @@ int text_height(void);
  * Element Types
  * ======================================================================== */
 
+/* A time-based opacity animation (0..1). */
+typedef struct {
+    int      active;
+    int      easing;          /* EASE_* */
+    float    from, to;
+    uint64_t start_ms;
+    uint32_t duration_ms;
+    int      remove_on_end;   /* deactivate the element when the anim ends */
+    int      repeat;          /* loop forever, ping-ponging from<->to */
+} anim_t;
+
 typedef struct {
     int active;
     int id;
@@ -217,6 +243,9 @@ typedef struct {
     int      shadow_dx, shadow_dy;
     int      shadow_blur;
     uint32_t shadow_color;
+
+    float  opacity;           /* 0..1 master alpha */
+    anim_t anim;              /* optional opacity animation */
 } text_element_t;
 
 typedef struct {
@@ -228,6 +257,9 @@ typedef struct {
     int align;
     int valign;
     int filter;
+
+    float  opacity;           /* 0..1 master alpha */
+    anim_t anim;              /* optional opacity animation */
 } image_overlay_t;
 
 typedef struct {
@@ -250,6 +282,9 @@ typedef struct {
     int      shadow_dx, shadow_dy;
     int      shadow_blur;
     uint32_t shadow_color;
+
+    float  opacity;           /* 0..1 master alpha */
+    anim_t anim;              /* optional opacity animation */
 } rect_element_t;
 
 typedef struct {
@@ -284,7 +319,28 @@ typedef struct {
     int font_slot;
     float font_size;
     int show_percent;
+
+    float  opacity;           /* 0..1 master alpha */
+    anim_t anim;              /* optional opacity animation */
+
+    int      indeterminate;     /* sweeping highlight instead of a fixed fill */
+    uint32_t indet_period_ms;   /* time for one sweep */
+    uint64_t indet_start_ms;
 } progress_bar_t;
+
+typedef struct {
+    int      active;
+    int      used;
+    int      id;
+    int      x, y;            /* centre; <0 = screen centre on that axis */
+    int      radius;          /* outer radius, px */
+    int      spokes;          /* spoke count (0 -> 12) */
+    uint32_t color;
+    uint32_t period_ms;       /* one full rotation */
+    uint64_t start_ms;
+    float    opacity;
+    anim_t   anim;
+} spinner_t;
 
 /* ========================================================================
  * Main State
@@ -299,11 +355,23 @@ typedef struct {
     int bg_filter;          /* resample quality for the background image */
     uint32_t bg_color;
 
+    /* Background crossfade */
+    image_t  bg_prev;
+    int      bg_prev_loaded;
+    int      bg_prev_scale_mode;
+    float    bg_prev_custom_scale;
+    int      bg_prev_filter;
+    anim_t   bg_anim;
+    float    bg_opacity;
+
+    int      anim_running;    /* cached: any animation/spinner active */
+
     text_element_t texts[MAX_TEXT_ELEMENTS];
     image_overlay_t overlays[MAX_IMAGE_OVERLAYS];
     rect_element_t rects[MAX_RECTANGLES];
     progress_bar_t bars[MAX_PROGRESS_BARS];
-    
+    spinner_t spinners[MAX_SPINNERS];
+
     int server_fd;
     int client_fds[MAX_SOCKET_CLIENTS];
     size_t client_cmd_len[MAX_SOCKET_CLIENTS];
@@ -315,6 +383,9 @@ typedef struct {
     int frozen;
     int quiet;
     int debug;
+
+    uint64_t last_activity_ms;  /* monotonic time of the last command */
+    uint32_t watchdog_ms;       /* idle timeout, 0 = disabled */
 } splash_state_t;
 
 /* ========================================================================
@@ -325,6 +396,10 @@ typedef struct {
 int drm_init(splash_drm_t *ctx, const char *device);
 void drm_cleanup(splash_drm_t *ctx);
 void drm_flip(splash_drm_t *ctx);
+
+/* anim.c */
+uint64_t now_ms(void);
+int      anim_tick(splash_state_t *st, uint64_t now);
 
 /* render.c */
 void render_frame(splash_state_t *st);
@@ -338,11 +413,15 @@ void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, floa
                               float radius, float fill_w, const paint_t *paint);
 void draw_round_rect_shadow(drm_buffer_t *buf, float x, float y, float w, float h,
                             float radius, float blur, uint32_t color);
+void draw_round_rect_sweep(drm_buffer_t *buf, float x, float y, float w, float h,
+                           float radius, const paint_t *paint, float phase);
 void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
-    const uint8_t *rgba, int img_w, int img_h, int filter);
+                const uint8_t *rgba, int img_w, int img_h,
+                int filter, float opacity);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb);
 void draw_rect_element(drm_buffer_t *buf, rect_element_t *re);
+void draw_spinner(drm_buffer_t *buf, spinner_t *sp, uint64_t now);
 void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
     int mode, float custom_scale, int *out_x, int *out_y, int *out_w, int *out_h);
 
@@ -365,6 +444,8 @@ image_overlay_t* overlay_find(splash_state_t *st, int id);
 image_overlay_t* overlay_alloc(splash_state_t *st);
 rect_element_t* rect_find(splash_state_t *st, int id);
 rect_element_t* rect_alloc(splash_state_t *st);
+spinner_t* spinner_find(splash_state_t *st, int id);
+spinner_t* spinner_alloc(splash_state_t *st);
 void clear_all_elements(splash_state_t *st);
 
 /* utils.c */
