@@ -46,7 +46,8 @@ and I wanted to move to newer technology - it made a need for splash-drm.
 Splash-drm also contains some bells and whistles, so that it should fit to needs
 of most users.
 
-References:
+### References
+
 splash 1.x.x: https://github.com/oskarirauta/splash
 stefandmn's splash: https://github.com/stefandmn/Splash
 
