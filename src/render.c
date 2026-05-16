@@ -1,12 +1,17 @@
 /*
  * render.c - Frame rendering and drawing primitives
+ *
+ * Rounded geometry (progress bars + RECT elements) is rendered with a
+ * signed-distance field. One shared routine means the track, the fill and
+ * the border are always the *same* curve, so they nest pixel-perfectly,
+ * and every edge is anti-aliased.
  */
 
 #include "splash.h"
-#include "math.h"
+#include <math.h>
 
 /* ========================================================================
- * Drawing Primitives
+ * Basic Rectangle Primitives
  * ======================================================================== */
 
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color) {
@@ -36,303 +41,144 @@ void draw_rect_blend(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t col
 }
 
 /* ========================================================================
- * Circle Lookup Table
+ * Anti-aliased Rounded Rectangle (signed distance field)
+ *
+ * Coverage is derived analytically from the distance to the shape's edge,
+ * which gives a smooth 1px edge and a corner radius that is independent of
+ * how wide the shape happens to be.
  * ======================================================================== */
 
-typedef struct {
-    int *x_offsets;
-    int *y_offsets;
-    int size;
-} circle_lut_t;
+/* Signed distance from (px,py) to a rounded rectangle.
+ * Box centred at (cx,cy), half-extents (hx,hy), corner radius r.
+ * Negative inside, positive outside, zero exactly on the edge.
+ * sqrtf() is only evaluated inside the four corner quadrants. */
+static inline float sdf_round_rect(float px, float py,
+                                   float cx, float cy,
+                                   float hx, float hy, float r) {
+    float qx = fabsf(px - cx) - hx + r;
+    float qy = fabsf(py - cy) - hy + r;
+    float ox = qx > 0.0f ? qx : 0.0f;
+    float oy = qy > 0.0f ? qy : 0.0f;
+    float outside;
+    if (ox > 0.0f && oy > 0.0f)
+        outside = sqrtf(ox * ox + oy * oy);   /* true corner region */
+    else
+        outside = ox + oy;                    /* straight edge: one term is 0 */
+    float inside = fminf(fmaxf(qx, qy), 0.0f);
+    return outside + inside - r;
+}
 
-static void build_circle_lut(circle_lut_t *lut, int r) {
-    lut->size = r + 1;
-    lut->x_offsets = calloc(lut->size, sizeof(int));
-    lut->y_offsets = calloc(lut->size, sizeof(int));
+/* Blend `coverage` (0..1) worth of `color` onto a single pixel. */
+static inline void blend_coverage(uint32_t *dst, uint32_t color, float coverage) {
+    if (coverage <= 0.0f) return;
+    if (coverage > 1.0f) coverage = 1.0f;
+    uint32_t a = (uint32_t)((float)(color >> 24) * coverage + 0.5f);
+    if (a == 0) return;
+    blend_pixel(dst, (color & 0x00FFFFFFu) | (a << 24));
+}
 
-    for (int i = 0; i <= r; i++) {
-        lut->x_offsets[i] = (int)round(sqrt((double)r * r - (double)i * i));
-        lut->y_offsets[i] = lut->x_offsets[i];
+/* Clamp a corner radius so it never exceeds half of the shorter side. */
+static float clamp_radius(float w, float h, float r) {
+    if (r < 0.0f) r = 0.0f;
+    float maxr = (w < h ? w : h) * 0.5f;
+    if (r > maxr) r = maxr;
+    return r;
+}
+
+/* Filled anti-aliased rounded rectangle. */
+void draw_round_rect(drm_buffer_t *buf, float x, float y, float w, float h,
+                     float radius, uint32_t color) {
+    if (w <= 0.0f || h <= 0.0f) return;
+    radius = clamp_radius(w, h, radius);
+
+    float hx = w * 0.5f, hy = h * 0.5f;
+    float cx = x + hx,   cy = y + hy;
+
+    int x0 = clamp((int)floorf(x),       0, (int)buf->width);
+    int y0 = clamp((int)floorf(y),       0, (int)buf->height);
+    int x1 = clamp((int)ceilf (x + w),   0, (int)buf->width);
+    int y1 = clamp((int)ceilf (y + h),   0, (int)buf->height);
+
+    for (int py = y0; py < y1; py++) {
+        uint32_t *line = (uint32_t *)(buf->map + py * buf->pitch + x0 * 4);
+        float fy = (float)py + 0.5f;
+        for (int px = x0; px < x1; px++, line++) {
+            float d = sdf_round_rect((float)px + 0.5f, fy, cx, cy, hx, hy, radius);
+            blend_coverage(line, color, 0.5f - d);   /* 1px linear edge ramp */
+        }
     }
 }
 
-static void free_circle_lut(circle_lut_t *lut) {
-    free(lut->x_offsets);
-    free(lut->y_offsets);
-    lut->size = 0;
+/* Anti-aliased rounded-rectangle outline, grown inward from the outer edge. */
+void draw_round_rect_outline(drm_buffer_t *buf, float x, float y, float w, float h,
+                             float radius, float border_width, uint32_t color) {
+    if (w <= 0.0f || h <= 0.0f || border_width <= 0.0f) return;
+    radius = clamp_radius(w, h, radius);
+
+    float maxbw = (w < h ? w : h) * 0.5f;
+    if (border_width > maxbw) border_width = maxbw;
+
+    float hx = w * 0.5f, hy = h * 0.5f;
+    float cx = x + hx,   cy = y + hy;
+    float half_bw = border_width * 0.5f;
+
+    int x0 = clamp((int)floorf(x),       0, (int)buf->width);
+    int y0 = clamp((int)floorf(y),       0, (int)buf->height);
+    int x1 = clamp((int)ceilf (x + w),   0, (int)buf->width);
+    int y1 = clamp((int)ceilf (y + h),   0, (int)buf->height);
+
+    for (int py = y0; py < y1; py++) {
+        uint32_t *line = (uint32_t *)(buf->map + py * buf->pitch + x0 * 4);
+        float fy = (float)py + 0.5f;
+        for (int px = x0; px < x1; px++, line++) {
+            float d = sdf_round_rect((float)px + 0.5f, fy, cx, cy, hx, hy, radius);
+            /* distance to the stroke band that occupies d in [-border_width, 0] */
+            float band = fabsf(d + half_bw) - half_bw;
+            blend_coverage(line, color, 0.5f - band);
+        }
+    }
 }
 
-/* ========================================================================
- * Rounded Rectangle Drawing
- * ======================================================================== */
+/* Filled rounded rectangle revealed left-to-right up to `fill_w`.
+ *
+ * The shape - and therefore the corner radius - is always the full
+ * rectangle; only how much of it is shown changes. The left corners are
+ * thus rock-steady regardless of the progress value, and once fill_w
+ * reaches w the right corners round off on their own. */
+void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, float h,
+                              float radius, float fill_w, uint32_t color) {
+    if (w <= 0.0f || h <= 0.0f || fill_w <= 0.0f) return;
+    radius = clamp_radius(w, h, radius);
 
-void draw_rounded_rect(drm_buffer_t *buf, int x, int y, int w, int h, int radius,
-                       uint32_t fill_color, uint32_t border_color, int border_width,
-                       int fill, int blend) {
-    if (radius <= 0) {
-        if (fill) {
-            if (blend)
-                draw_rect_blend(buf, x, y, w, h, fill_color);
-            else
-                draw_filled_rect(buf, x, y, w, h, fill_color);
-        }
-        if (border_width > 0) {
-            for (int i = 0; i < border_width; i++) {
-                int x0 = clamp(x + i, 0, (int)buf->width);
-                int y0 = clamp(y + i, 0, (int)buf->height);
-                int x1 = clamp(x + w - 1 - i, 0, (int)buf->width - 1);
-                int y1 = clamp(y + h - 1 - i, 0, (int)buf->height - 1);
+    if (fill_w > w) fill_w = w;
+    int full = (fill_w >= w - 0.01f);
 
-                for (int px = x0; px <= x1; px++) {
-                    uint32_t *top = (uint32_t *)(buf->map + y0 * buf->pitch + px * 4);
-                    uint32_t *bot = (uint32_t *)(buf->map + y1 * buf->pitch + px * 4);
-                    if (blend) {
-                        blend_pixel(top, border_color);
-                        blend_pixel(bot, border_color);
-                    } else {
-                        *top = border_color;
-                        *bot = border_color;
-                    }
-                }
-                for (int py = y0; py <= y1; py++) {
-                    uint32_t *left = (uint32_t *)(buf->map + py * buf->pitch + x0 * 4);
-                    uint32_t *right = (uint32_t *)(buf->map + py * buf->pitch + x1 * 4);
-                    if (blend) {
-                        blend_pixel(left, border_color);
-                        blend_pixel(right, border_color);
-                    } else {
-                        *left = border_color;
-                        *right = border_color;
-                    }
-                }
+    float hx = w * 0.5f, hy = h * 0.5f;
+    float cx = x + hx,   cy = y + hy;
+    float clip_edge = x + fill_w;        /* absolute x of the soft right edge */
+
+    int x0 = clamp((int)floorf(x),                            0, (int)buf->width);
+    int y0 = clamp((int)floorf(y),                            0, (int)buf->height);
+    int x1 = clamp((int)ceilf(x + (full ? w : fill_w)) + 1,   0, (int)buf->width);
+    int y1 = clamp((int)ceilf(y + h),                         0, (int)buf->height);
+
+    for (int py = y0; py < y1; py++) {
+        uint32_t *line = (uint32_t *)(buf->map + py * buf->pitch + x0 * 4);
+        float fy = (float)py + 0.5f;
+        for (int px = x0; px < x1; px++, line++) {
+            float d = sdf_round_rect((float)px + 0.5f, fy, cx, cy, hx, hy, radius);
+            float cov = 0.5f - d;
+            if (cov <= 0.0f) continue;
+            if (cov > 1.0f) cov = 1.0f;
+            if (!full) {
+                /* soft 1px vertical cut at the progress edge */
+                float hmask = clip_edge - (float)px;
+                if (hmask <= 0.0f) continue;
+                if (hmask < 1.0f) cov *= hmask;
             }
-        }
-        return;
-    }
-
-    int r = radius;
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
-
-    int x0 = clamp(x, 0, (int)buf->width);
-    int y0 = clamp(y, 0, (int)buf->height);
-    int x1 = clamp(x + w, 0, (int)buf->width);
-    int y1 = clamp(y + h, 0, (int)buf->height);
-
-    circle_lut_t lut;
-    build_circle_lut(&lut, r);
-
-    if (fill) {
-        for (int row = y0; row < y1; row++) {
-            int dy = row - y;
-            int dx_start = 0;
-            int dx_end = w;
-
-            if (dy < r) {
-                int corner_dx = lut.x_offsets[r - dy];
-                dx_start = r - corner_dx;
-                dx_end = w - r + corner_dx;
-                if (dx_start < 1) dx_start = 1;
-                if (dx_end > w - 1) dx_end = w - 1;
-            }
-            else if (dy >= h - r) {
-                int corner_dy = dy - (h - r);
-                int corner_dx = lut.x_offsets[corner_dy];
-                dx_start = r - corner_dx;
-                dx_end = w - r + corner_dx;
-                if (dx_start < 1) dx_start = 1;
-                if (dx_end > w - 1) dx_end = w - 1;
-            }
-
-            int start_x = clamp(x + dx_start, x0, x1);
-            int end_x = clamp(x + dx_end, x0, x1);
-
-            uint32_t *line = (uint32_t *)(buf->map + row * buf->pitch + start_x * 4);
-            for (int px = start_x; px < end_x; px++, line++) {
-                if (blend)
-                    blend_pixel(line, fill_color);
-                else
-                    *line = fill_color;
-            }
+            blend_coverage(line, color, cov);
         }
     }
-
-    if (border_width > 0) {
-        for (int bw = 0; bw < border_width; bw++) {
-            int bx = x + bw;
-            int by = y + bw;
-            int bw_w = w - 2 * bw;
-            int bw_h = h - 2 * bw;
-            int br = r - bw;
-            if (br < 0) br = 0;
-
-            if (br > 0) {
-                circle_lut_t bw_lut;
-                build_circle_lut(&bw_lut, br);
-
-                for (int dx = br; dx < bw_w - br; dx++) {
-                    int px_top = bx + dx;
-                    int py_top = by;
-                    int px_bot = bx + dx;
-                    int py_bot = by + bw_h - 1;
-
-                    if (px_top >= x0 && px_top < x1 && py_top >= y0 && py_top < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_top * buf->pitch + px_top * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                    if (px_bot >= x0 && px_bot < x1 && py_bot >= y0 && py_bot < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_bot * buf->pitch + px_bot * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                }
-
-                for (int dy = br; dy < bw_h - br; dy++) {
-                    int px_left = bx;
-                    int py_left = by + dy;
-                    int px_right = bx + bw_w - 1;
-                    int py_right = by + dy;
-
-                    if (px_left >= x0 && px_left < x1 && py_left >= y0 && py_left < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_left * buf->pitch + px_left * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                    if (px_right >= x0 && px_right < x1 && py_right >= y0 && py_right < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_right * buf->pitch + px_right * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                }
-
-                /* Four corners with GAP FILLING for solid arc */
-                /* Top-left corner */
-                {
-                    int prev_px = -1;
-                    for (int dy = 0; dy <= br; dy++) {
-                        int dx = bw_lut.x_offsets[br - dy];
-                        int px = bx + br - dx;
-                        int py = by + dy;
-                        if (prev_px >= 0 && px != prev_px) {
-                            int step = (px > prev_px) ? 1 : -1;
-                            for (int fill_px = prev_px + step; fill_px != px; fill_px += step) {
-                                if (fill_px >= x0 && fill_px < x1 && py >= y0 && py < y1) {
-                                    uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + fill_px * 4);
-                                    if (blend) blend_pixel(p, border_color); else *p = border_color;
-                                }
-                            }
-                        }
-                        if (px >= x0 && px < x1 && py >= y0 && py < y1) {
-                            uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + px * 4);
-                            if (blend) blend_pixel(p, border_color); else *p = border_color;
-                        }
-                        prev_px = px;
-                    }
-                }
-                /* Top-right corner */
-                {
-                    int prev_px = -1;
-                    for (int dy = 0; dy <= br; dy++) {
-                        int dx = bw_lut.x_offsets[br - dy];
-                        int px = bx + bw_w - 1 - br + dx;
-                        int py = by + dy;
-                        if (prev_px >= 0 && px != prev_px) {
-                            int step = (px > prev_px) ? 1 : -1;
-                            for (int fill_px = prev_px + step; fill_px != px; fill_px += step) {
-                                if (fill_px >= x0 && fill_px < x1 && py >= y0 && py < y1) {
-                                    uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + fill_px * 4);
-                                    if (blend) blend_pixel(p, border_color); else *p = border_color;
-                                }
-                            }
-                        }
-                        if (px >= x0 && px < x1 && py >= y0 && py < y1) {
-                            uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + px * 4);
-                            if (blend) blend_pixel(p, border_color); else *p = border_color;
-                        }
-                        prev_px = px;
-                    }
-                }
-                /* Bottom-right corner */
-                {
-                    int prev_px = -1;
-                    for (int dy = 0; dy <= br; dy++) {
-                        int dx = bw_lut.x_offsets[br - dy];
-                        int px = bx + bw_w - 1 - br + dx;
-                        int py = by + bw_h - 1 - dy;
-                        if (prev_px >= 0 && px != prev_px) {
-                            int step = (px > prev_px) ? 1 : -1;
-                            for (int fill_px = prev_px + step; fill_px != px; fill_px += step) {
-                                if (fill_px >= x0 && fill_px < x1 && py >= y0 && py < y1) {
-                                    uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + fill_px * 4);
-                                    if (blend) blend_pixel(p, border_color); else *p = border_color;
-                                }
-                            }
-                        }
-                        if (px >= x0 && px < x1 && py >= y0 && py < y1) {
-                            uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + px * 4);
-                            if (blend) blend_pixel(p, border_color); else *p = border_color;
-                        }
-                        prev_px = px;
-                    }
-                }
-                /* Bottom-left corner */
-                {
-                    int prev_px = -1;
-                    for (int dy = 0; dy <= br; dy++) {
-                        int dx = bw_lut.x_offsets[br - dy];
-                        int px = bx + br - dx;
-                        int py = by + bw_h - 1 - dy;
-                        if (prev_px >= 0 && px != prev_px) {
-                            int step = (px > prev_px) ? 1 : -1;
-                            for (int fill_px = prev_px + step; fill_px != px; fill_px += step) {
-                                if (fill_px >= x0 && fill_px < x1 && py >= y0 && py < y1) {
-                                    uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + fill_px * 4);
-                                    if (blend) blend_pixel(p, border_color); else *p = border_color;
-                                }
-                            }
-                        }
-                        if (px >= x0 && px < x1 && py >= y0 && py < y1) {
-                            uint32_t *p = (uint32_t *)(buf->map + py * buf->pitch + px * 4);
-                            if (blend) blend_pixel(p, border_color); else *p = border_color;
-                        }
-                        prev_px = px;
-                    }
-                }
-
-                free_circle_lut(&bw_lut);
-            } else {
-                for (int dx = 0; dx < bw_w; dx++) {
-                    int px_top = bx + dx;
-                    int py_top = by;
-                    int px_bot = bx + dx;
-                    int py_bot = by + bw_h - 1;
-
-                    if (px_top >= x0 && px_top < x1 && py_top >= y0 && py_top < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_top * buf->pitch + px_top * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                    if (px_bot >= x0 && px_bot < x1 && py_bot >= y0 && py_bot < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_bot * buf->pitch + px_bot * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                }
-                for (int dy = 0; dy < bw_h; dy++) {
-                    int px_left = bx;
-                    int py_left = by + dy;
-                    int px_right = bx + bw_w - 1;
-                    int py_right = by + dy;
-
-                    if (px_left >= x0 && px_left < x1 && py_left >= y0 && py_left < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_left * buf->pitch + px_left * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                    if (px_right >= x0 && px_right < x1 && py_right >= y0 && py_right < y1) {
-                        uint32_t *p = (uint32_t *)(buf->map + py_right * buf->pitch + px_right * 4);
-                        if (blend) blend_pixel(p, border_color); else *p = border_color;
-                    }
-                }
-            }
-        }
-    }
-
-    free_circle_lut(&lut);
 }
 
 /* ========================================================================
@@ -421,108 +267,70 @@ void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
  * ======================================================================== */
 
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
+    /* Resolve on-screen position from anchor + alignment */
     int x, y;
 
     if (pb->x < 0) {
-        x = (buf->width - pb->w) / 2;
+        x = ((int)buf->width - pb->w) / 2;
     } else {
         x = pb->x;
-        if (pb->align == ALIGN_CENTER)
-            x -= pb->w / 2;
-        else if (pb->align == ALIGN_RIGHT)
-            x -= pb->w;
+        if (pb->align == ALIGN_CENTER)        x -= pb->w / 2;
+        else if (pb->align == ALIGN_RIGHT)    x -= pb->w;
     }
 
     if (pb->y < 0) {
-        y = (buf->height - pb->h) / 2;
+        y = ((int)buf->height - pb->h) / 2;
     } else {
         y = pb->y;
-        if (pb->valign == VALIGN_MIDDLE)
-            y -= pb->h / 2;
-        else if (pb->valign == VALIGN_BOTTOM)
-            y -= pb->h;
+        if (pb->valign == VALIGN_MIDDLE)       y -= pb->h / 2;
+        else if (pb->valign == VALIGN_BOTTOM)  y -= pb->h;
     }
 
-    int w = pb->w;
-    int h = pb->h;
-    int r = pb->radius;
+    float fx = (float)x,     fy = (float)y;
+    float fw = (float)pb->w, fh = (float)pb->h;
+    float r  = (float)pb->radius;
 
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
+    float bw = (pb->borderless || pb->border_width <= 0)
+                 ? 0.0f : (float)pb->border_width;
 
-    /* Step 1: Background fill only (no border) */
-    if (r > 0) {
-        draw_rounded_rect(buf, x, y, w, h, r, pb->bg_color, 0, 0, 1, 0);
-    } else {
-        draw_filled_rect(buf, x, y, w, h, pb->bg_color);
-    }
+    /* 1. Background track */
+    draw_round_rect(buf, fx, fy, fw, fh, r, pb->bg_color);
 
-    /* Step 2: Progress fill - inset by border width */
-    int fill_w = (int)(w * fclamp(pb->value, 0.0f, 1.0f));
-    if (fill_w > 0) {
-        if (r > 0) {
-            int bx = pb->borderless ? 0 : pb->border_width;
-            int by = pb->borderless ? 0 : pb->border_width;
-            int fill_r = r - bx;
-            if (fill_r < 0) fill_r = 0;
-            int actual_fill_w = fill_w - 2 * bx;
-            if (actual_fill_w < 1) actual_fill_w = 1;
-            if (actual_fill_w > w - 2 * bx) actual_fill_w = w - 2 * bx;
-
-            if (fill_r > 0 && actual_fill_w > 0) {
-                draw_rounded_fill(buf, x + bx, y + by, actual_fill_w, h - 2 * by, fill_r, pb->bar_color);
-            } else if (actual_fill_w > 0) {
-                draw_filled_rect(buf, x + bx, y + by, actual_fill_w, h - 2 * by, pb->bar_color);
-            }
-        } else {
-            int bx = pb->borderless ? 0 : pb->border_width;
-            int by = pb->borderless ? 0 : pb->border_width;
-            int actual_fill_w = fill_w - 2 * bx;
-            if (actual_fill_w < 1) actual_fill_w = 1;
-            if (actual_fill_w > w - 2 * bx) actual_fill_w = w - 2 * bx;
-            draw_filled_rect(buf, x + bx, y + by, actual_fill_w, h - 2 * by, pb->bar_color);
+    /* 2. Progress fill: the track's inner shape, revealed left-to-right.
+     *    Insetting a rounded rect by `bw` also shrinks its radius by `bw`,
+     *    so the fill nests exactly inside the border with no slivers. */
+    float value = fclamp(pb->value, 0.0f, 1.0f);
+    if (value > 0.0f) {
+        float in_x = fx + bw;
+        float in_y = fy + bw;
+        float in_w = fw - 2.0f * bw;
+        float in_h = fh - 2.0f * bw;
+        float in_r = r - bw;
+        if (in_r < 0.0f) in_r = 0.0f;
+        if (in_w > 0.0f && in_h > 0.0f) {
+            draw_round_rect_progress(buf, in_x, in_y, in_w, in_h,
+                                     in_r, in_w * value, pb->bar_color);
         }
     }
 
-    /* Step 3: Border LAST */
-    if (!pb->borderless && pb->border_width > 0) {
-        if (r > 0) {
-            draw_rounded_rect(buf, x, y, w, h, r, 0, pb->border_color, pb->border_width, 0, 0);
-        } else {
-            for (int i = 0; i < pb->border_width; i++) {
-                int x0 = x + i;
-                int y0 = y + i;
-                int x1 = x + w - 1 - i;
-                int y1 = y + h - 1 - i;
-                for (int px = x0; px <= x1; px++) {
-                    uint32_t *top = (uint32_t *)(buf->map + y0 * buf->pitch + px * 4);
-                    uint32_t *bot = (uint32_t *)(buf->map + y1 * buf->pitch + px * 4);
-                    *top = pb->border_color;
-                    *bot = pb->border_color;
-                }
-                for (int py = y0; py <= y1; py++) {
-                    uint32_t *left = (uint32_t *)(buf->map + py * buf->pitch + x0 * 4);
-                    uint32_t *right = (uint32_t *)(buf->map + py * buf->pitch + x1 * 4);
-                    *left = pb->border_color;
-                    *right = pb->border_color;
-                }
-            }
-        }
+    /* 3. Border last, on top of track + fill */
+    if (bw > 0.0f) {
+        draw_round_rect_outline(buf, fx, fy, fw, fh, r, bw, pb->border_color);
     }
 
-    /* Percent text */
+    /* 4. Percentage text */
     if (pb->show_percent && pb->value > 0.0f) {
         char percent_str[8];
         snprintf(percent_str, sizeof(percent_str), "%d%%", (int)(pb->value * 100));
 
         text_element_t te = {0};
-        te.active = 1;
+        te.active    = 1;
         strncpy(te.text, percent_str, sizeof(te.text) - 1);
-        te.x = x + w / 2;
-        te.y = y + h / 2;
-        te.align = ALIGN_CENTER;
-        te.valign = VALIGN_MIDDLE;
-        te.color = pb->text_color;
+        te.x         = x + pb->w / 2;
+        te.y         = y + pb->h / 2;
+        te.align     = ALIGN_CENTER;
+        te.valign    = VALIGN_MIDDLE;
+        te.color     = pb->text_color;
         te.font_slot = pb->font_slot > 0 ? pb->font_slot : 0;
         te.font_size = pb->font_size > 0 ? pb->font_size : 0;
         draw_text_element(buf, &te);
@@ -530,69 +338,26 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 }
 
 /* ========================================================================
- * Rounded Fill (left side rounded, right side straight)
- * ======================================================================== */
-
-void draw_rounded_fill(drm_buffer_t *buf, int x, int y, int w, int h, int r, uint32_t color) {
-    if (r <= 0 || w <= 0) {
-        if (w > 0) draw_filled_rect(buf, x, y, w, h, color);
-        return;
-    }
-
-    if (r > w / 2) r = w / 2;
-    if (r > h / 2) r = h / 2;
-
-    int x0 = clamp(x, 0, (int)buf->width);
-    int y0 = clamp(y, 0, (int)buf->height);
-    int x1 = clamp(x + w, 0, (int)buf->width);
-    int y1 = clamp(y + h, 0, (int)buf->height);
-
-    circle_lut_t lut;
-    build_circle_lut(&lut, r);
-
-    for (int row = y0; row < y1; row++) {
-        int dy = row - y;
-        int dx_start = 0;
-
-        if (dy < r) {
-            int corner_dx = lut.x_offsets[r - dy];
-            dx_start = r - corner_dx;
-            if (dx_start < 1) dx_start = 1;
-        }
-        else if (dy >= h - r) {
-            int corner_dy = dy - (h - r);
-            int corner_dx = lut.x_offsets[corner_dy];
-            dx_start = r - corner_dx;
-            if (dx_start < 1) dx_start = 1;
-        }
-
-        int start_x = clamp(x + dx_start, x0, x1);
-        int end_x = x1;
-
-        uint32_t *line = (uint32_t *)(buf->map + row * buf->pitch + start_x * 4);
-        for (int px = start_x; px < end_x; px++, line++) {
-            *line = color;
-        }
-    }
-
-    free_circle_lut(&lut);
-}
-
-/* ========================================================================
  * Rectangle Element Drawing
  * ======================================================================== */
 
 void draw_rect_element(drm_buffer_t *buf, rect_element_t *re) {
-    if (re->radius > 0 || re->fill || re->border_width > 0) {
-        draw_rounded_rect(buf, re->x, re->y, re->w, re->h, re->radius,
-                          re->color, re->border_color, re->border_width,
-                          re->fill, re->blend);
-    } else {
-        if (re->blend)
-            draw_rect_blend(buf, re->x, re->y, re->w, re->h, re->color);
-        else
-            draw_filled_rect(buf, re->x, re->y, re->w, re->h, re->color);
-    }
+    if (re->w <= 0 || re->h <= 0) return;
+
+    float fx = (float)re->x, fy = (float)re->y;
+    float fw = (float)re->w, fh = (float)re->h;
+    float r  = (float)re->radius;
+
+    /* A rect is filled unless it is explicitly outline-only
+     * (fill == 0 together with a positive border width). */
+    int do_fill = re->fill || re->border_width <= 0;
+
+    if (do_fill)
+        draw_round_rect(buf, fx, fy, fw, fh, r, re->color);
+
+    if (re->border_width > 0)
+        draw_round_rect_outline(buf, fx, fy, fw, fh, r,
+                                (float)re->border_width, re->border_color);
 }
 
 /* ========================================================================

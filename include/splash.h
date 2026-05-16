@@ -66,6 +66,15 @@
 #define VALIGN_BOTTOM 2
 
 /* ========================================================================
+ * Gradient Directions
+ * ======================================================================== */
+
+#define GRAD_NONE       0
+#define GRAD_VERTICAL   1
+#define GRAD_HORIZONTAL 2
+#define GRAD_DIAGONAL   3   /* top-left -> bottom-right */
+
+/* ========================================================================
  * Color Utilities
  * ======================================================================== */
 
@@ -100,6 +109,13 @@ static inline void blend_pixel(uint32_t *dst, uint32_t src) {
 
     *dst = argb((uint8_t)a, (uint8_t)r, (uint8_t)g, (uint8_t)b);
 }
+
+/* A fill paint: a solid colour, or a 2-stop linear gradient. */
+typedef struct {
+    uint32_t color0;     /* solid colour, or gradient start */
+    uint32_t color1;     /* gradient end (ignored when gradient == GRAD_NONE) */
+    int      gradient;   /* GRAD_NONE / GRAD_VERTICAL / GRAD_HORIZONTAL / GRAD_DIAGONAL */
+} paint_t;
 
 /* ========================================================================
  * DRM/KMS Types
@@ -208,6 +224,16 @@ typedef struct {
     int radius;
     uint32_t border_color;
     int border_width;
+
+    /* Gradient fill (optional) */
+    uint32_t grad_color;     /* second gradient stop; first stop is `color` */
+    int      grad_dir;       /* GRAD_NONE = solid */
+
+    /* Drop shadow (optional) */
+    int      shadow;         /* enabled */
+    int      shadow_dx, shadow_dy;
+    int      shadow_blur;
+    uint32_t shadow_color;
 } rect_element_t;
 
 typedef struct {
@@ -224,6 +250,16 @@ typedef struct {
     uint32_t bar_color;     /* Fill color */
     uint32_t border_color;  /* Border color */
     uint32_t text_color;    /* Percent text color */
+
+    /* Gradient for the fill (optional) */
+    uint32_t bar_color2;     /* second gradient stop; first stop is `bar_color` */
+    int      bar_gradient;   /* GRAD_NONE = solid */
+
+    /* Drop shadow of the whole bar (optional) */
+    int      shadow;
+    int      shadow_dx, shadow_dy;
+    int      shadow_blur;
+    uint32_t shadow_color;
 
     int borderless;         /* No border */
     int border_width;       /* Border thickness */
@@ -276,10 +312,14 @@ void drm_flip(splash_drm_t *ctx);
 void render_frame(splash_state_t *st);
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
 void draw_rect_blend(drm_buffer_t *buf, int x, int y, int w, int h, uint32_t color);
-void draw_rounded_rect(drm_buffer_t *buf, int x, int y, int w, int h, int radius,
-                       uint32_t fill_color, uint32_t border_color, int border_width,
-                       int fill, int blend);
-void draw_rounded_fill(drm_buffer_t *buf, int x, int y, int w, int h, int r, uint32_t color);
+void draw_round_rect(drm_buffer_t *buf, float x, float y, float w, float h,
+                     float radius, const paint_t *paint);
+void draw_round_rect_outline(drm_buffer_t *buf, float x, float y, float w, float h,
+                             float radius, float border_width, uint32_t color);
+void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, float h,
+                              float radius, float fill_w, const paint_t *paint);
+void draw_round_rect_shadow(drm_buffer_t *buf, float x, float y, float w, float h,
+                            float radius, float blur, uint32_t color);
 void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
     const uint8_t *rgba, int img_w, int img_h);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);

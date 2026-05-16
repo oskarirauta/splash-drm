@@ -89,20 +89,18 @@ static char* read_file(const char *path) {
         perror(path);
         return NULL;
     }
-    
-    fseek(f, 0, SEEK_END);
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    
-    char *buf = malloc(size + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    
-    fread(buf, 1, size, f);
-    buf[size] = '\0';
+    if (size < 0)                  { fclose(f); return NULL; }
+    rewind(f);
+
+    char *buf = malloc((size_t)size + 1);
+    if (!buf)                      { fclose(f); return NULL; }
+
+    size_t got = fread(buf, 1, (size_t)size, f);
     fclose(f);
+    buf[got] = '\0';               /* terminoi luettujen tavujen kohdalta */
     return buf;
 }
 
