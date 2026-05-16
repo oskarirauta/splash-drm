@@ -159,7 +159,7 @@ static void print_usage(const char *prog) {
 		"  %s --file /etc/splash-commands.json\n"
 		"  %s '{\"cmd\":\"status\"}'\n"
 		"  %s '{\"cmd\":\"exit\"}'\n",
-		prog, prog, prog, prog, prog, prog, prog, prog);
+		prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* ========================================================================
