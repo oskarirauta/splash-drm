@@ -18,7 +18,7 @@
 #include "splash.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
-#include "stb_truetype.h"
+#include "stb/stb_truetype.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
