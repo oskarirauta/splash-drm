@@ -1,178 +1,232 @@
 # splash-drm
 
-Self-contained DRM/KMS bootsplash daemon for Linux initrd. Zero external dependencies.
+A self-contained DRM/KMS bootsplash daemon for Linux. It renders directly
+through DRM/KMS kernel ioctls — no legacy framebuffer, and no libdrm at
+runtime (libdrm headers are used only at build time). It is designed to
+start from an initramfs and survive the switch to the real rootfs: the
+control channel is an abstract UNIX socket, so there is no filesystem
+entry to relocate.
+
+Two programs are built:
+
+- **`splash-drm`** — the daemon that owns the display.
+- **`splash-ctl`** — a small client that sends JSON commands to the daemon.
 
 ## Features
 
-- **Direct DRM/KMS** via kernel ioctls (no libdrm)
-- **PNG image loading** via stb_image (single-file, public domain)
-- **TrueType font rendering** via stb_truetype (single-file, public domain)
-- **Multiple visual elements**: text, rectangles, image overlays, progress bars
-- **Named pipe command interface** for real-time updates
-- **Pipe relocation** for initrd -> rootfs transition
-- **Static linking ready** for minimal initrd size
+- **Direct DRM/KMS** via kernel ioctls; statically linkable, links only `libm`.
+- **Anti-aliased rounded geometry** — rectangles and progress bars are
+  rendered with a signed-distance field, so corners stay crisp at any size.
+- **Gradient fills and soft drop shadows** for rectangles and progress bars.
+- **High-quality image scaling** — nearest, bilinear, Mitchell bicubic, or
+  Lanczos-3 resampling.
+- **TrueType text** — sub-pixel positioning, kerning, UTF-8, multi-line text
+  (`\n`), and an optional soft text shadow.
+- **Animation engine** — time-based opacity fades, background crossfades, and
+  an Apple-style rotating boot spinner.
+- **Progress bars** — determinate (0–100%) or indeterminate (sweeping
+  highlight), with six built-in colour themes or fully custom colours.
+- **JSON control protocol** over an abstract UNIX socket.
+- **Clean shutdown** on `SIGTERM`/`SIGINT`/`SIGHUP`, plus an optional
+  inactivity watchdog so a stuck boot script can never leave the splash up
+  forever.
+- **Vendored dependencies** — cJSON and stb are git submodules; nothing
+  external is needed at runtime.
 
 ## Building
 
 ### Requirements
 
-- GCC or Clang
-- Linux kernel headers (for DRM ioctls)
-- stb_image.h and stb_truetype.h (single-file libraries)
+- A C compiler (GCC or Clang).
+- Linux kernel headers and libdrm headers — needed only to compile.
 
-### Get dependencies
+### Get the submodules
+
+cJSON and stb are git submodules in the repository root. Clone with them, or
+populate them afterwards:
 
 ```bash
-wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h -O include/stb_image.h
-wget https://raw.githubusercontent.com/nothings/stb/master/stb_truetype.h -O include/stb_truetype.h
+git clone --recurse-submodules <repo-url>
+# or, in an existing clone:
+make submodules            # == git submodule update --init --recursive
 ```
 
 ### Build
 
 ```bash
-# Dynamic linking (development)
-make
-
-# Static linking (initrd)
-make static
-
-# Or manually:
-gcc -O2 -static -o splash-drm src/*.c -lm -I./include
+make            # dynamic build (development)
+make static     # statically linked build (for initramfs)
+make clean      # remove build artifacts
 ```
 
-## Usage
+## Running the daemon
 
 ```bash
-./splash-drm /dev/dri/card0 /run/splash.pipe /path/to/font.ttf [options]
+splash-drm <drm_device> [options]
 ```
 
-### Options
+| Option | Description |
+|--------|-------------|
+| `--config <file\|json>` | Load configuration (font slots). Inline JSON or a file path. |
+| `--cmds <file\|json>` | Run an initial batch of commands on startup. |
+| `--timeout <seconds>` | Exit if no command arrives for this long (watchdog). |
+| `-q`, `--quiet` | Suppress all output. |
+| `--debug` | Enable debug output. |
+| `-v`, `--version` | Print the version and exit. |
+| `-h`, `--help` | Print usage and exit. |
 
-- `-bg <path> [mode]` - Initial background image (mode: cover/contain/stretch/none)
-- `-text <id> <x> <y> <align> <color> <text>` - Initial text element
+The configuration JSON currently carries font slots:
 
-### Commands (via named pipe)
+```json
+{"fonts": [
+  {"slot": 0, "path": "/usr/share/fonts/dejavu/DejaVuSans.ttf", "size": 24}
+]}
+```
 
-| Command | Description |
-|---------|-------------|
-| `EXIT` | Terminate daemon |
-| `RELOCATE_PIPE <path>` | Move pipe to new rootfs |
-| `READY?` | Check if daemon is responsive |
-| `CLEAR [#RRGGBB]` | Clear screen (optional color) |
-| `IMAGE <path> [mode]` | Set background image |
-| `TEXT <id> <x> <y> <L/C/R> <#RRGGBB> <text>` | Add/update text |
-| `REMOVE_TEXT <id>` | Remove text element |
-| `RECT <id> <x> <y> <w> <h> <#RRGGBB> [blend]` | Draw rectangle |
-| `REMOVE_RECT <id>` | Remove rectangle |
-| `OVERLAY <id> <x> <y> [w] [h] [align] [valign] <path>` | Add image overlay |
-| `REMOVE_OVERLAY <id>` | Remove overlay |
-| `PROGRESS <id> <x> <y> <w> <h> <style> <prefix> <suffix> <value>` | Create progress bar |
-| `UPDATE_PROGRESS <id> <value> [text]` | Update progress |
-| `HIDE_PROGRESS <id>` | Hide progress bar |
-
-### Progress Bar Styles
-
-- `0` - Blue (modern)
-- `1` - Green (success)
-- `2` - Amber (warning)
-- `3` - Red (error)
-- `4` - Purple (accent)
-- `5` - Cyan (cool)
-
-## Initrd Integration
-
-### Example initramfs hook
+Example:
 
 ```bash
-#!/bin/sh
-# /usr/share/initramfs-tools/hooks/splash
-
-PREREQ=""
-prereqs() {
-    echo "$PREREQ"
-}
-
-case $1 in
-    prereqs)
-        prereqs
-        exit 0
-        ;;
-esac
-
-. /usr/share/initramfs-tools/hook-functions
-
-copy_exec /usr/bin/splash-drm
-mkdir -p $DESTDIR/usr/share/fonts
-cp -r /usr/share/fonts/truetype $DESTDIR/usr/share/fonts/
+splash-drm /dev/dri/card0 \
+  --config /etc/splash-fonts.json \
+  --cmds   /etc/splash-boot.json \
+  --timeout 120
 ```
 
-### Example initramfs script
+## Controlling the splash
+
+`splash-ctl` sends one command — a single JSON object or an array of objects —
+to the running daemon and prints the reply.
 
 ```bash
-#!/bin/sh
-# /usr/share/initramfs-tools/scripts/init-premount/splash
-
-PREREQ="udev"
-prereqs() {
-    echo "$PREREQ"
-}
-
-case $1 in
-    prereqs)
-        prereqs
-        exit 0
-        ;;
-esac
-
-# Start splash daemon
-/usr/bin/splash-drm /dev/dri/card0 /run/splash.pipe \
-    /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-    -bg /boot/splash.png &
-
-# Wait for pipe
-for i in $(seq 1 50); do
-    if [ -p /run/splash.pipe ]; then
-        break
-    fi
-    sleep 0.1
-done
+splash-ctl '<json-string>'
+splash-ctl --file <json-file>
 ```
 
-### Rootfs transition
+| Option | Description |
+|--------|-------------|
+| `--file` | Read the JSON from a file instead of the argument. |
+| `--raw` | Print the raw JSON response. |
+| `--debug` | Print debug output. |
 
 ```bash
-# Before switching root
-mkdir -p /newroot/run
-echo "RELOCATE_PIPE /newroot/run/splash.pipe" > /run/splash.pipe
-
-# After switching root, from new init system
-echo "UPDATE_PROGRESS 0 100" > /run/splash.pipe
-echo "EXIT" > /run/splash.pipe
+splash-ctl '{"cmd":"image","path":"/boot/splash.png","crossfade":600}'
+splash-ctl '{"cmd":"progress","id":0,"x":-1,"y":600,"w":400,"value":0.0}'
+splash-ctl '[{"cmd":"update_progress","id":0,"value":1.0},{"cmd":"exit"}]'
 ```
 
-## Project Structure
+## Command reference
+
+Every command is a JSON object with a `cmd` field. Elements are addressed by
+a caller-chosen integer `id`; sending a command for an existing `id` updates
+that element.
+
+| Command | Purpose |
+|---------|---------|
+| `clear` | Full reset: remove every element and the background, set the backdrop colour (`color`, default black). Loaded fonts are kept. |
+| `bg_color` | Set the backdrop colour. |
+| `image` | Set the background image (`path`, `mode`, `scale`, `filter`, `crossfade`). |
+| `text` | Add or update a text element (`text`, `x`, `y`, `align`, `valign`, `color`, `font`, `size`, shadow, `opacity`). |
+| `remove_text` | Remove a text element. |
+| `rect` | Add or update a rectangle (`x`, `y`, `w`, `h`, `color`, `fill`, `radius`, border, gradient, shadow, `opacity`). |
+| `remove_rect` | Remove a rectangle. |
+| `overlay` | Add or update an image overlay (`path`, `x`, `y`, `w`, `h`, alignment, `filter`, `opacity`). |
+| `remove_overlay` | Remove an image overlay. |
+| `progress` | Create or reconfigure a progress bar (geometry, `style`, `value`, `indeterminate`, colours, shadow). |
+| `update_progress` | Update only a bar's `value` (and optionally toggle `indeterminate`). |
+| `hide_progress` | Hide a progress bar. |
+| `animate` | Animate an element's opacity (`type`, `id`, `from`, `to`, `duration`, `easing`, `repeat`, `remove_on_end`). |
+| `spinner` | Create / show / hide an Apple-style boot spinner (`x`, `y`, `radius`, `color`, `period`, `spokes`, `action`). |
+| `suspend` / `resume` | Freeze or resume rendering. |
+| `status` | Query the daemon state. |
+| `ready` | Mark the daemon as ready. |
+| `exit` | Tell the daemon to shut down cleanly. |
+
+### Colours
+
+Colours are hex strings: `#RGB`, `#RRGGBB`, or `#RRGGBBAA`.
+
+### Progress bar styles
+
+`style` selects a built-in colour theme; any explicit colour field switches
+the bar to fully custom colours.
+
+| Style | Theme |
+|-------|-------|
+| `0` | Blue |
+| `1` | Green |
+| `2` | Amber |
+| `3` | Red |
+| `4` | Purple |
+| `5` | Cyan |
+
+### Examples
+
+```json
+{"cmd": "text", "id": 0, "x": -1, "y": 400, "align": "center",
+ "text": "Starting up\nplease wait", "color": "#ffffff", "shadow": true}
+```
+
+```json
+{"cmd": "spinner", "id": 0, "x": -1, "y": -1, "radius": 40,
+ "color": "#ffffff", "period": 900, "hidden": true}
+```
+
+```json
+{"cmd": "animate", "type": "text", "id": 0, "to": 0,
+ "duration": 400, "easing": "ease_out", "remove_on_end": true}
+```
+
+An `x` or `y` of `-1` centres the element on that axis.
+
+## Initramfs integration
+
+The daemon is started early from the initramfs and driven with `splash-ctl`.
+Because the control socket lives in the abstract namespace, the same socket
+keeps working across the switch to the real rootfs — there is nothing to move.
+
+```sh
+# Start the splash daemon (statically linked binary in the initramfs).
+splash-drm /dev/dri/card0 \
+    --config '{"fonts":[{"slot":0,"path":"/font.ttf","size":24}]}' \
+    --cmds   '[{"cmd":"image","path":"/splash.png"}]' &
+
+# Update progress as boot proceeds.
+splash-ctl '{"cmd":"progress","id":0,"x":-1,"y":600,"w":400,"value":0.0}'
+splash-ctl '{"cmd":"update_progress","id":0,"value":0.5}'
+
+# Just before handing control to the real init, tear the splash down.
+splash-ctl '{"cmd":"exit"}'
+```
+
+If the boot script might die without sending `exit`, start the daemon with
+`--timeout <seconds>` so it removes itself after that much inactivity.
+
+## Project structure
 
 ```
 splash-drm/
 ├── include/
-│   ├── splash.h          # Main header
-│   ├── stb_image.h       # Image decoder (external)
-│   └── stb_truetype.h    # Font rasterizer (external)
+│   └── splash.h          # Shared declarations
 ├── src/
-│   ├── main.c            # Entry point
-│   ├── drm.c             # DRM/KMS interface
-│   ├── render.c          # Graphics rendering
-│   ├── font.c            # Font loading/rendering
-│   ├── image.c           # Image loading
-│   ├── elements.c        # Element management
-│   ├── pipe.c            # Named pipe I/O
-│   ├── cmd.c             # Command protocol
-│   └── utils.c           # Utilities
+│   ├── main.c            # Entry point, event loop, signals, watchdog
+│   ├── drm.c             # DRM/KMS interface (raw ioctls)
+│   ├── render.c          # Drawing primitives and frame composition
+│   ├── anim.c            # Time-based animation engine
+│   ├── font.c            # TrueType text rendering (stb_truetype)
+│   ├── image.c           # PNG loading (stb_image)
+│   ├── elements.c        # Element allocation, lookup, cleanup
+│   ├── socket.c          # Abstract UNIX socket server
+│   ├── cmd.c             # JSON command parsing and dispatch
+│   ├── utils.c           # Colour parsing, themes, clamping
+│   └── splash-ctl.c      # JSON control client
+├── cJSON/                # Submodule: JSON parser
+├── stb/                  # Submodule: stb_image.h, stb_truetype.h
 ├── Makefile
 └── README.md
 ```
 
 ## License
 
-This project is released into the public domain (Unlicense).
-The included stb libraries are also public domain.
+splash-drm is released into the public domain (Unlicense). The vendored
+dependencies keep their own licenses: stb is public domain, and cJSON is
+MIT-licensed.
