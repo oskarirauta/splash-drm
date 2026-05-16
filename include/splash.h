@@ -33,7 +33,7 @@
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "3.1.0"
+#define SPLASH_VERSION      "3.2.0"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8

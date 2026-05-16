@@ -6,12 +6,23 @@
  * That keeps the statically linked binary dependency-free at runtime,
  * which matters when it starts from initramfs.
  *
- * Rendering uses two "dumb" buffers flipped front/back. drm_init() also
- * saves the CRTC state so drm_cleanup() can hand the display back exactly
- * as it was found.
+ * Rendering uses two "dumb" buffers flipped front/back. drm_init() saves
+ * the CRTC state so drm_cleanup() can hand the display back exactly as it
+ * was found; it also force-probes connectors and retries briefly, so it
+ * can bring up a cold display - e.g. a USB monitor still enumerating at
+ * boot - without another program probing it first.
  */
 
 #include "splash.h"
+
+/*
+ * Cold-boot retry budget for drm_init(): how many times, and how far
+ * apart, to retry opening the device and finding a usable connector
+ * before giving up. 25 x 200 ms = 5 s, enough for a USB display to
+ * finish enumerating after a power-on.
+ */
+#define DRM_INIT_RETRIES   25
+#define DRM_INIT_RETRY_MS  200
 
 /* ========================================================================
  * Internal DRM Mode Structures
@@ -166,27 +177,57 @@ static _drmModeConnector *_drmModeGetConnector(int fd, uint32_t connector_id) {
 	drmModeModeInfo modes_buf[64];
 	uint64_t props_buf[64], propvals_buf[64], encs_buf[64];
 
+	/*
+	 * First pass: count_modes == 0 makes the kernel run a full probe -
+	 * read the EDID (or fall back to the driver's built-in modes when
+	 * there is no EDID) and rebuild the mode list - and report the real
+	 * counts. Without this an output that has never been driven, such
+	 * as a freshly plugged USB display, reports zero modes and looks
+	 * unusable until some other program (a compositor, kmscube, ...)
+	 * has probed it first.
+	 */
 	memset(&u, 0, sizeof(u));
+	u.conn.connector_id = connector_id;
+	if (_drm_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &u.conn) < 0)
+		return NULL;
+
+	uint32_t n_modes = u.conn.count_modes;
+	uint32_t n_props = u.conn.count_props;
+	uint32_t n_encs  = u.conn.count_encoders;
+	if (n_modes > 64) n_modes = 64;
+	if (n_props > 64) n_props = 64;
+	if (n_encs  > 64) n_encs  = 64;
+
+	/*
+	 * Second pass: hand the kernel buffers sized to the probed counts
+	 * and fetch the actual mode / property / encoder lists. A non-zero
+	 * count means "copy the cached list", so the probe is not repeated;
+	 * connector_id survives from the first pass.
+	 */
 	memset(modes_buf, 0, sizeof(modes_buf));
 	memset(props_buf, 0, sizeof(props_buf));
 	memset(propvals_buf, 0, sizeof(propvals_buf));
 	memset(encs_buf, 0, sizeof(encs_buf));
 
-	u.conn.connector_id   = connector_id;
-	u.conn.modes_ptr      = (uint64_t)(uintptr_t)modes_buf;
-	u.conn.props_ptr      = (uint64_t)(uintptr_t)props_buf;
+	u.conn.modes_ptr       = (uint64_t)(uintptr_t)modes_buf;
+	u.conn.props_ptr       = (uint64_t)(uintptr_t)props_buf;
 	u.conn.prop_values_ptr = (uint64_t)(uintptr_t)propvals_buf;
-	u.conn.encoders_ptr   = (uint64_t)(uintptr_t)encs_buf;
-	u.conn.count_modes    = 64;
-	u.conn.count_props    = 64;
-	u.conn.count_encoders = 64;
+	u.conn.encoders_ptr    = (uint64_t)(uintptr_t)encs_buf;
+	u.conn.count_modes     = n_modes;
+	u.conn.count_props     = n_props;
+	u.conn.count_encoders  = n_encs;
 
 	if (_drm_ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &u.conn) < 0)
 		return NULL;
 
-	if (u.conn.count_modes > 64 || u.conn.count_props > 64 ||
-	    u.conn.count_encoders > 64)
-		return NULL;
+	/* The lists can change between the two passes; never trust a count
+	 * larger than the buffer that was handed in. */
+	uint32_t got_modes = u.conn.count_modes;
+	uint32_t got_props = u.conn.count_props;
+	uint32_t got_encs  = u.conn.count_encoders;
+	if (got_modes > n_modes) got_modes = n_modes;
+	if (got_props > n_props) got_props = n_props;
+	if (got_encs  > n_encs)  got_encs  = n_encs;
 
 	_drmModeConnector *c = calloc(1, sizeof(_drmModeConnector));
 	if (!c)
@@ -200,27 +241,27 @@ static _drmModeConnector *_drmModeGetConnector(int fd, uint32_t connector_id) {
 	c->mmWidth           = u.conn.mm_width;
 	c->mmHeight          = u.conn.mm_height;
 	c->subpixel          = u.conn.subpixel;
-	c->count_modes       = u.conn.count_modes;
-	c->count_props       = u.conn.count_props;
-	c->count_encoders    = u.conn.count_encoders;
+	c->count_modes       = (int)got_modes;
+	c->count_props       = (int)got_props;
+	c->count_encoders    = (int)got_encs;
 
-	if (u.conn.count_modes) {
-		c->modes = calloc(u.conn.count_modes, sizeof(drmModeModeInfo));
+	if (got_modes) {
+		c->modes = calloc(got_modes, sizeof(drmModeModeInfo));
 		memcpy(c->modes, modes_buf,
-		       u.conn.count_modes * sizeof(drmModeModeInfo));
+		       got_modes * sizeof(drmModeModeInfo));
 	}
-	if (u.conn.count_props) {
-		c->props       = calloc(u.conn.count_props, sizeof(uint32_t));
-		c->prop_values = calloc(u.conn.count_props, sizeof(uint64_t));
+	if (got_props) {
+		c->props       = calloc(got_props, sizeof(uint32_t));
+		c->prop_values = calloc(got_props, sizeof(uint64_t));
 		memcpy(c->props, props_buf,
-		       u.conn.count_props * sizeof(uint32_t));
+		       got_props * sizeof(uint32_t));
 		memcpy(c->prop_values, propvals_buf,
-		       u.conn.count_props * sizeof(uint64_t));
+		       got_props * sizeof(uint64_t));
 	}
-	if (u.conn.count_encoders) {
-		c->encoders = calloc(u.conn.count_encoders, sizeof(uint32_t));
+	if (got_encs) {
+		c->encoders = calloc(got_encs, sizeof(uint32_t));
 		memcpy(c->encoders, encs_buf,
-		       u.conn.count_encoders * sizeof(uint32_t));
+		       got_encs * sizeof(uint32_t));
 	}
 
 	return c;
@@ -516,16 +557,42 @@ static int drm_open_device(const char *path) {
 
 int drm_init(splash_drm_t *ctx, const char *device) {
 	memset(ctx, 0, sizeof(*ctx));
-	ctx->fd = drm_open_device(device);
-	if (ctx->fd < 0)
-		return -1;
+	ctx->fd = -1;
 
-	if (find_connector_and_crtc(ctx->fd, &ctx->conn_id,
-	                            &ctx->crtc_id, &ctx->mode) < 0) {
-		close(ctx->fd);
-		ctx->fd = -1;
+	/*
+	 * Cold-boot retry. When the splash is the first thing to run at
+	 * boot, the DRM device may not exist yet (a USB display still
+	 * enumerating) and a just-appeared connector can momentarily report
+	 * no modes. Retry the open + connector search for a few seconds so
+	 * a cold boot needs no other program to bring the display up first.
+	 */
+	int fd = -1;
+	int ready = 0;
+	for (int attempt = 0; attempt < DRM_INIT_RETRIES; attempt++) {
+		if (fd < 0)
+			fd = drm_open_device(device);
+
+		if (fd >= 0 &&
+		    find_connector_and_crtc(fd, &ctx->conn_id,
+		                            &ctx->crtc_id, &ctx->mode) == 0) {
+			ready = 1;
+			break;
+		}
+
+		if (attempt + 1 < DRM_INIT_RETRIES) {
+			struct timespec ts;
+			ts.tv_sec  =  DRM_INIT_RETRY_MS / 1000;
+			ts.tv_nsec = (DRM_INIT_RETRY_MS % 1000) * 1000000L;
+			nanosleep(&ts, NULL);
+		}
+	}
+
+	if (!ready) {
+		if (fd >= 0)
+			close(fd);
 		return -1;
 	}
+	ctx->fd = fd;
 
 	uint32_t w = ctx->mode.hdisplay;
 	uint32_t h = ctx->mode.vdisplay;
