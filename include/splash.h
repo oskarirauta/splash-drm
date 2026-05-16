@@ -33,7 +33,7 @@
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "3.0.0"
+#define SPLASH_VERSION      "3.1.0"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8
@@ -278,6 +278,8 @@ typedef struct {
 	int      active;
 	int      id;
 	int      x, y, w, h;
+	int      align;           /* ALIGN_*  - how the x anchor is interpreted */
+	int      valign;          /* VALIGN_* - how the y anchor is interpreted */
 	uint32_t color;
 	int      fill;
 	int      radius;

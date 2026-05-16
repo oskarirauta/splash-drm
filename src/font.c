@@ -397,17 +397,21 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 	if (maxw <= 0 || block_h <= 0)
 		return;
 
-	/* Block placement: valign positions the whole block, align positions
-	 * each line within it (relative to the anchor point te->x). */
+	/* Resolve the anchor point: a negative te->x / te->y centres on that
+	 * axis. valign then positions the whole block, align each line within
+	 * it, relative to that anchor. */
+	int anchor_x = (te->x < 0) ? (int)buf->width  / 2 : te->x;
+	int anchor_y = (te->y < 0) ? (int)buf->height / 2 : te->y;
+
 	int block_x;					/* fb x of the buffer's left */
-	if      (te->align == ALIGN_CENTER) block_x = te->x - maxw / 2;
-	else if (te->align == ALIGN_RIGHT)  block_x = te->x - maxw;
-	else                                block_x = te->x;
+	if      (te->align == ALIGN_CENTER) block_x = anchor_x - maxw / 2;
+	else if (te->align == ALIGN_RIGHT)  block_x = anchor_x - maxw;
+	else                                block_x = anchor_x;
 
 	int block_y;					/* fb y of the block's top */
-	if      (te->valign == VALIGN_MIDDLE) block_y = te->y - block_h / 2;
-	else if (te->valign == VALIGN_BOTTOM) block_y = te->y - block_h;
-	else                                  block_y = te->y;
+	if      (te->valign == VALIGN_MIDDLE) block_y = anchor_y - block_h / 2;
+	else if (te->valign == VALIGN_BOTTOM) block_y = anchor_y - block_h;
+	else                                  block_y = anchor_y;
 
 	/* The whole block is rasterised once into an 8-bit coverage buffer.
 	 * It is composited twice: blurred and offset as the shadow, then

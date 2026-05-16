@@ -33,23 +33,6 @@ Two programs are built:
 - **Vendored dependencies** — cJSON and stb are git submodules; nothing
   external is needed at runtime.
 
-## Version
-
-Why version 3.x.x? Where is version 1.x.x or 2.x.x?
-Version 1.x.x is legacy version of this software (although this is a completely
-made out of scratch, some ideas just were kept), was my original splash which was
-originally forked from stefandmn's Splash. Version 2.0.0 was this same software
-that is now this 3.x.x, version 2.x.x just wasn't ever made to release as it
-was work in progress title, transformation phase from my old splash.
-My original splash, v1.x.x is very much still working but it uses legacy framebuffer,
-and I wanted to move to newer technology - it made a need for splash-drm.
-Splash-drm also contains some bells and whistles, so that it should fit to needs
-of most users.
-
-References:
-splash 1.x.x: https://github.com/oskarirauta/splash
-stefandmn's splash: https://github.com/stefandmn/Splash
-
 ## Building
 
 ### Requirements
@@ -193,7 +176,19 @@ the bar to fully custom colours.
  "duration": 400, "easing": "ease_out", "remove_on_end": true}
 ```
 
-An `x` or `y` of `-1` centres the element on that axis.
+### Positioning
+
+Every element defaults to the centre of the screen. `x` and `y` set an
+anchor point — a negative value (the default) anchors to the screen centre
+on that axis — and `align` / `valign` decide how the element sits relative
+to that anchor (both default to centre/middle). For example, giving only
+`"y": 40` places the element's vertical centre at y=40 while it stays
+horizontally centred. `"align": "left", "valign": "top"` restores classic
+top-left positioning.
+
+For an `overlay`, giving only `w` or only `h` scales the image
+proportionally — the missing dimension is derived from the image's aspect
+ratio. Giving neither draws it at native size; giving both uses both.
 
 ## Initramfs integration
 

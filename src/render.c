@@ -628,28 +628,15 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 	if (op <= 0.0f)
 		return;
 
-	/* Resolve the on-screen position from anchor + alignment. */
-	int x, y;
-
-	if (pb->x < 0) {
-		x = ((int)buf->width - pb->w) / 2;
-	} else {
-		x = pb->x;
-		if (pb->align == ALIGN_CENTER)
-			x -= pb->w / 2;
-		else if (pb->align == ALIGN_RIGHT)
-			x -= pb->w;
-	}
-
-	if (pb->y < 0) {
-		y = ((int)buf->height - pb->h) / 2;
-	} else {
-		y = pb->y;
-		if (pb->valign == VALIGN_MIDDLE)
-			y -= pb->h / 2;
-		else if (pb->valign == VALIGN_BOTTOM)
-			y -= pb->h;
-	}
+	/* Resolve the top-left corner from the anchor + alignment. A negative
+	 * x or y anchors to the screen centre on that axis. */
+	int anchor_x = (pb->x < 0) ? (int)buf->width  / 2 : pb->x;
+	int anchor_y = (pb->y < 0) ? (int)buf->height / 2 : pb->y;
+	int x = anchor_x, y = anchor_y;
+	if      (pb->align == ALIGN_CENTER) x -= pb->w / 2;
+	else if (pb->align == ALIGN_RIGHT)  x -= pb->w;
+	if      (pb->valign == VALIGN_MIDDLE) y -= pb->h / 2;
+	else if (pb->valign == VALIGN_BOTTOM) y -= pb->h;
 
 	float fx = (float)x,     fy = (float)y;
 	float fw = (float)pb->w, fh = (float)pb->h;
@@ -742,7 +729,17 @@ void draw_rect_element(drm_buffer_t *buf, rect_element_t *re) {
 	if (op <= 0.0f)
 		return;
 
-	float fx = (float)re->x, fy = (float)re->y;
+	/* Resolve the top-left corner from the anchor + alignment. A negative
+	 * x or y anchors to the screen centre on that axis. */
+	int anchor_x = (re->x < 0) ? (int)buf->width  / 2 : re->x;
+	int anchor_y = (re->y < 0) ? (int)buf->height / 2 : re->y;
+	int rx = anchor_x, ry = anchor_y;
+	if      (re->align == ALIGN_CENTER) rx -= re->w / 2;
+	else if (re->align == ALIGN_RIGHT)  rx -= re->w;
+	if      (re->valign == VALIGN_MIDDLE) ry -= re->h / 2;
+	else if (re->valign == VALIGN_BOTTOM) ry -= re->h;
+
+	float fx = (float)rx, fy = (float)ry;
 	float fw = (float)re->w, fh = (float)re->h;
 	float r  = (float)re->radius;
 
@@ -811,21 +808,30 @@ void render_frame(splash_state_t *st) {
 		if (!ov->active || !ov->img.rgba)
 			continue;
 
-		int x = ov->x, y = ov->y, w = ov->w, h = ov->h;
-		if (w <= 0)
+		/* Resolve the draw size. If only one of w/h is given, the other
+		 * is derived from the image's aspect ratio; if neither is given,
+		 * the image is drawn at its native size. */
+		int w = ov->w, h = ov->h;
+		if (w <= 0 && h <= 0) {
 			w = ov->img.w;
-		if (h <= 0)
 			h = ov->img.h;
+		} else if (h <= 0) {
+			h = (int)((long)w * ov->img.h / ov->img.w);
+		} else if (w <= 0) {
+			w = (int)((long)h * ov->img.w / ov->img.h);
+		}
+		if (w < 1) w = 1;
+		if (h < 1) h = 1;
 
-		if (ov->align == ALIGN_CENTER)
-			x -= w / 2;
-		else if (ov->align == ALIGN_RIGHT)
-			x -= w;
-
-		if (ov->valign == VALIGN_MIDDLE)
-			y -= h / 2;
-		else if (ov->valign == VALIGN_BOTTOM)
-			y -= h;
+		/* Resolve the top-left corner from the anchor + alignment.
+		 * A negative x or y anchors to the screen centre on that axis. */
+		int anchor_x = (ov->x < 0) ? (int)buf->width  / 2 : ov->x;
+		int anchor_y = (ov->y < 0) ? (int)buf->height / 2 : ov->y;
+		int x = anchor_x, y = anchor_y;
+		if      (ov->align == ALIGN_CENTER) x -= w / 2;
+		else if (ov->align == ALIGN_RIGHT)  x -= w;
+		if      (ov->valign == VALIGN_MIDDLE) y -= h / 2;
+		else if (ov->valign == VALIGN_BOTTOM) y -= h;
 
 		draw_image(buf, x, y, w, h, ov->img.rgba,
 		           ov->img.w, ov->img.h, ov->filter, ov->opacity);

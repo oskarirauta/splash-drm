@@ -14,6 +14,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include "splash.h"
+
+#ifdef SOCKET_NAME
+#undef SOCKET_NAME
+#endif
+
 #define SOCKET_NAME "splash-drm"
 
 static int debug_mode = 0;
@@ -138,9 +144,11 @@ static void print_usage(const char *prog) {
 		"Usage: %s [options] <json-string>\n"
 		"       %s [options] --file <json-file>\n\n"
 		"Options:\n"
-		"  --debug    Show debug output\n"
 		"  --raw      Output the raw JSON response\n"
 		"  --file     Read JSON from a file instead of the argument\n\n"
+		"  --help     Show this help and exit\n"
+		"  --version  Show version and exit\n"
+		"  --debug    Show debug output\n\n"
 		"JSON format (single command):\n"
 		"  {\"cmd\": \"text\", \"id\": 0, \"x\": 100, \"y\": 200, \"text\": \"Hello\"}\n\n"
 		"JSON format (batch):\n"
@@ -183,6 +191,10 @@ int main(int argc, char **argv) {
 		} else if (strcmp(argv[arg_offset], "--help") == 0 ||
 		           strcmp(argv[arg_offset], "-h") == 0) {
 			print_usage(argv[0]);
+			return 0;
+		} else if (strcmp(argv[arg_offset], "--version") == 0 ||
+			   strcmp(argv[arg_offset], "-v") == 0) {
+			printf("splash-ctl v%s\n", SPLASH_VERSION);
 			return 0;
 		} else {
 			fprintf(stderr, "Unknown option: %s\n", argv[arg_offset]);

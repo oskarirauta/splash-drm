@@ -296,10 +296,10 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	te->id        = id;
-	te->x         = get_int(args, "x", 0);
-	te->y         = get_int(args, "y", 0);
-	te->align     = get_align(args, "align", ALIGN_LEFT);
-	te->valign    = get_valign(args, "valign", VALIGN_TOP);
+	te->x         = get_int(args, "x", -1);
+	te->y         = get_int(args, "y", -1);
+	te->align     = get_align(args, "align", ALIGN_CENTER);
+	te->valign    = get_valign(args, "valign", VALIGN_MIDDLE);
 	te->color     = get_color(args, "color", rgb(255, 255, 255));
 	te->font_slot = get_int(args, "font", 0);
 	te->font_size = get_float(args, "size", 0);
@@ -360,10 +360,12 @@ static int cmd_rect(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	re->id           = id;
-	re->x            = get_int(args, "x", 0);
-	re->y            = get_int(args, "y", 0);
+	re->x            = get_int(args, "x", -1);
+	re->y            = get_int(args, "y", -1);
 	re->w            = get_int(args, "w", 0);
 	re->h            = get_int(args, "h", 0);
+	re->align        = get_align(args, "align", ALIGN_CENTER);
+	re->valign       = get_valign(args, "valign", VALIGN_MIDDLE);
 	re->color        = get_color(args, "color", rgb(255, 255, 255));
 	re->fill         = cJSON_IsTrue(cJSON_GetObjectItem(args, "fill"));
 	re->radius       = get_int(args, "radius", 0);
@@ -424,12 +426,12 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	ov->id     = id;
-	ov->x      = get_int(args, "x", 0);
-	ov->y      = get_int(args, "y", 0);
+	ov->x      = get_int(args, "x", -1);
+	ov->y      = get_int(args, "y", -1);
 	ov->w      = get_int(args, "w", 0);
 	ov->h      = get_int(args, "h", 0);
-	ov->align  = get_align(args, "align", ALIGN_LEFT);
-	ov->valign = get_valign(args, "valign", VALIGN_TOP);
+	ov->align  = get_align(args, "align", ALIGN_CENTER);
+	ov->valign = get_valign(args, "valign", VALIGN_MIDDLE);
 	ov->filter = get_filter(args, "filter", IMG_LANCZOS);
 
 	/* Master opacity; a fresh command cancels any running animation. */

@@ -60,9 +60,9 @@ static void print_usage(const char *prog) {
 		"  --cmds <file|json>     Execute initial commands on startup\n"
 		"  --timeout <seconds>    Exit if idle (no command) for this long\n"
 		"  -q, --quiet            Suppress all output\n"
-		"  --debug                Enable debug output\n"
+		"  -h, --help             Show this help and exit\n"
 		"  -v, --version          Show version and exit\n"
-		"  -h, --help             Show this help and exit\n\n"
+		"  --debug                Enable debug output\n\n"
 		"Config JSON format:\n"
 		"  {\"fonts\": [\n"
 		"    {\"slot\": 0, \"path\": \"/path/to/font.ttf\", \"size\": 24}\n"
@@ -229,6 +229,14 @@ int main(int argc, char **argv) {
 	st.server_fd  = -1;
 	for (int i = 0; i < MAX_SOCKET_CLIENTS; i++)
 		st.client_fds[i] = -1;
+
+	if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0) {
+		printf("splash-drm v%s\n", SPLASH_VERSION);
+		return 0;
+	} else if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
+		print_usage(argv[0]);
+		return 0;
+	}
 
 	for (int i = 2; i < argc; i++) {
 		if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
