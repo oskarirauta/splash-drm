@@ -58,6 +58,9 @@ objs
 objs/*.*
 objs/.*
 
+images
+fonts
+
 splash-drm
 splash-cli
 splash-ctl
