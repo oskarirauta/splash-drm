@@ -18,17 +18,17 @@ static void print_usage(const char *prog) {
         "  drm_device    DRM device path (e.g., /dev/dri/card0)\n"
         "  pipe_path     Command pipe path (e.g., /run/splash.pipe)\n\n"
         "Options:\n"
-        "  -font <slot> <path> [size]  Load font to slot (0-3), default size 24\n"
-        "  -bg <path> [mode] [scale]   Initial background image\n"
-        "                              mode: cover, contain (default), stretch, none, custom\n"
-        "                              scale: required for custom mode (e.g., 0.5)\n"
-        "  -bg-color <#RRGGBB>          Initial background color (default: black)\n"
-        "  -text <id> <x> <y> <align> <color> <text>\n"
-        "                              Initial text element\n"
-        "  -v, --version               Show version and exit\n"
-        "  -h, --help                  Show this help and exit\n"
-        "  -q, --quiet                 Suppress all output\n"
-        "  --debug                     Enable debug output\n\n"
+        "  -font <slot> <path> [size]   Load font to slot (0-%d), default size 24\n"
+        "  -bg <path> [mode] [scale]    Initial background image\n"
+        "                               mode: cover, contain (default), stretch, none, custom\n"
+        "                               scale: required for custom mode (e.g., 0.5)\n"
+        "  -bg-color <#RRGGBB>           Initial background color (default: black)\n"
+        "  -text <id> <x> <y> <align> <color> [font_slot] [font_size] -- <text>\n"
+        "                               Initial text element\n"
+        "  -v, --version                Show version and exit\n"
+        "  -h, --help                   Show this help and exit\n"
+        "  -q, --quiet                  Suppress all output\n"
+        "  --debug                      Enable debug output\n\n"
         "Commands via pipe (one per line):\n"
         "  EXIT                          - Terminate daemon\n"
         "  RELOCATE_PIPE <new_path>      - Move pipe to new rootfs\n"
@@ -36,13 +36,13 @@ static void print_usage(const char *prog) {
         "  CLEAR [#RRGGBB]               - Clear screen (optional color)\n"
         "  IMAGE <path> [mode] [scale]   - Set background image\n"
         "  BG_COLOR <#RRGGBB>            - Set background color\n"
-        "  TEXT <id> <x> <y> <L|C|R> <#RRGGBB> <text> [font_slot] [font_size]\n"
+        "  TEXT <id> <x> <y> <L|C|R> <#RRGGBB> [font_slot] [font_size] -- <text>\n"
         "  REMOVE_TEXT <id>              - Remove text element\n"
         "  RECT <id> <x> <y> <w> <h> <#RRGGBB> [blend]\n"
         "  REMOVE_RECT <id>              - Remove rectangle\n"
         "  OVERLAY <id> <x> <y> [w] [h] [align] [valign] <path>\n"
         "  REMOVE_OVERLAY <id>           - Remove image overlay\n"
-        "  PROGRESS <id> <x> <y> <w> <h> <style> <prefix> <suffix> <value>\n"
+        "  PROGRESS <id> <x> <y> <w> <h> <style> <prefix> <suffix> <value> [font_slot] [font_size] -- [text]\n"
         "  UPDATE_PROGRESS <id> <value> [inner_text]\n"
         "  HIDE_PROGRESS <id>            - Hide progress bar\n\n"
         "Progress bar styles:\n"
@@ -51,8 +51,13 @@ static void print_usage(const char *prog) {
         "  %s /dev/dri/card0 /run/splash.pipe\n"
         "  %s /dev/dri/card0 /run/splash.pipe -font 0 ./fonts/regular.ttf\n"
         "  %s /dev/dri/card0 /run/splash.pipe -font 0 font.ttf -bg splash.png contain\n"
-        "  %s /dev/dri/card0 /run/splash.pipe -font 0 font.ttf -font 1 bold.ttf 32\n",
-        SPLASH_VERSION, prog, prog, prog, prog, prog);
+        "  %s /dev/dri/card0 /run/splash.pipe -font 0 font.ttf -font 1 bold.ttf 32\n"
+        "  %s /dev/dri/card0 /run/splash.pipe -font 0 font.ttf -text 0 100 200 center #FFFFFF -- \"Hello\"\n"
+        "  %s /dev/dri/card0 /run/splash.pipe -font 0 font.ttf 24 -font 1 bold.ttf 32 -text 0 100 200 center #FFFFFF 1 -- \"Hello\"\n"
+        "  %s /dev/dri/card0 /run/splash.pipe -font 0 font.ttf -text 0 100 200 center #FFFFFF 0 48 -- \"Big text\"\n"
+        "  %s /dev/dri/card0 /run/splash.pipe -font 0 font.ttf -text 0 100 200 center #FFFFFF 48 -- \"Big with slot 0\"\n",
+        SPLASH_VERSION, prog, MAX_FONTS - 1,
+        prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* ========================================================================
@@ -66,6 +71,66 @@ static int parse_scale_mode(const char *mode_str, float *custom_scale) {
     if (strcmp(mode_str, "none") == 0) return SCALE_NONE;
     if (strcmp(mode_str, "custom") == 0) return SCALE_CUSTOM;
     return SCALE_CONTAIN;
+}
+
+static int is_integer(const char *str) {
+    if (!str || !*str) return 0;
+    char *endptr;
+    strtol(str, &endptr, 10);
+    return *endptr == '\0';
+}
+
+static int is_number(const char *str) {
+    if (!str || !*str) return 0;
+    char *endptr;
+    strtod(str, &endptr);
+    return *endptr == '\0';
+}
+
+/* Parse font params with smart detection:
+ * - Single number 0-3: font_slot
+ * - Single number 4-128: font_size with slot 0
+ * - Two numbers: slot and size
+ * Returns 1 if font params were found, 0 otherwise */
+static int parse_font_params_smart(int argc, char **argv, int *i,
+                                    int *font_slot, float *font_size) {
+    *font_slot = -1;
+    *font_size = 0;
+
+    if (*i + 1 >= argc || argv[*i + 1][0] == '-') {
+        return 0;
+    }
+
+    if (!is_integer(argv[*i + 1])) {
+        return 0;
+    }
+
+    int val1 = atoi(argv[*i + 1]);
+
+    /* Check if there's a second number */
+    if (*i + 2 < argc && argv[*i + 2][0] != '-' && is_number(argv[*i + 2])) {
+        /* Two numbers: first is slot, second is size */
+        if (val1 >= 0 && val1 < MAX_FONTS) {
+            *font_slot = val1;
+            *font_size = atof(argv[*i + 2]);
+            *i += 2;
+            return 1;
+        }
+    }
+
+    /* Only one number */
+    if (val1 >= 0 && val1 < MAX_FONTS) {
+        *font_slot = val1;
+        *i += 1;
+        return 1;
+    } else if (val1 > 0 && val1 <= 128) {
+        *font_slot = 0;
+        *font_size = (float)val1;
+        *i += 1;
+        return 1;
+    }
+
+    return 0;
 }
 
 static int parse_args(splash_state_t *st, int argc, char **argv) {
@@ -98,11 +163,28 @@ static int parse_args(splash_state_t *st, int argc, char **argv) {
                 te->align = (align[0] == 'C' || align[0] == 'c') ? ALIGN_CENTER :
                            (align[0] == 'R' || align[0] == 'r') ? ALIGN_RIGHT : ALIGN_LEFT;
                 te->color = parse_color(argv[++i]);
-                strncpy(te->text, argv[++i], sizeof(te->text) - 1);
-                te->text[sizeof(te->text) - 1] = '\0';
                 te->active = 1;
                 te->font_slot = 0;
                 te->font_size = 0;
+
+                /* Optional font_slot and font_size with smart detection */
+                int font_slot;
+                float font_size;
+                if (parse_font_params_smart(argc, argv, &i, &font_slot, &font_size)) {
+                    te->font_slot = font_slot;
+                    te->font_size = font_size;
+                }
+
+                /* Skip -- separator if present */
+                if (i + 1 < argc && strcmp(argv[i + 1], "--") == 0) {
+                    i++;
+                }
+
+                /* The rest is the text */
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    strncpy(te->text, argv[++i], sizeof(te->text) - 1);
+                }
+                te->text[sizeof(te->text) - 1] = '\0';
             }
         }
         else if (strcmp(argv[i], "-font") == 0 && i + 2 < argc) {
@@ -115,6 +197,8 @@ static int parse_args(splash_state_t *st, int argc, char **argv) {
             if (slot >= 0 && slot < MAX_FONTS) {
                 if (font_load(path, size, slot) < 0 && !st->quiet) {
                     fprintf(stderr, "Warning: Could not load font %s to slot %d\n", path, slot);
+                } else if (st->debug) {
+                    fprintf(stderr, "[debug] Loaded font %s to slot %d (size %.1f)\n", path, slot, size);
                 }
             }
         }
@@ -145,18 +229,18 @@ int main(int argc, char **argv) {
         print_usage(argv[0]);
         return 1;
     }
-    
+
     const char *device = argv[1];
     const char *pipe_path = argv[2];
-    
+
     splash_state_t st = {0};
     st.bg_color = 0;
     strncpy(st.pipe_path, pipe_path, sizeof(st.pipe_path) - 1);
     st.pipe_path[sizeof(st.pipe_path) - 1] = '\0';
-    
+
     /* Parse args early to get quiet/debug flags and fonts */
     parse_args(&st, argc, argv);
-    
+
     /* Initialize DRM */
     if (drm_init(&st.drm, device) < 0) {
         if (!st.quiet)
@@ -164,11 +248,18 @@ int main(int argc, char **argv) {
         font_unload_all();
         return 1;
     }
-    
+
     if (!st.quiet)
         printf("splash-drm v%s: DRM %dx%d @ %dHz\n", SPLASH_VERSION,
                st.drm.mode.hdisplay, st.drm.mode.vdisplay, st.drm.mode.vrefresh);
-    
+
+    if (st.debug) {
+        fprintf(stderr, "[debug] DRM initialized: %dx%d @ %dHz\n",
+                st.drm.mode.hdisplay, st.drm.mode.vdisplay, st.drm.mode.vrefresh);
+        fprintf(stderr, "[debug] Pipe path: %s\n", st.pipe_path);
+        fprintf(stderr, "[debug] Fonts loaded: %d\n", font_count_loaded());
+    }
+
     /* Create command pipe */
     st.pipe_fd = pipe_create(st.pipe_path);
     if (st.pipe_fd < 0) {
@@ -178,46 +269,53 @@ int main(int argc, char **argv) {
         font_unload_all();
         return 1;
     }
-    
+
+    if (st.debug) {
+        fprintf(stderr, "[debug] Pipe created: %s (fd=%d)\n", st.pipe_path, st.pipe_fd);
+    }
+
     st.running = 1;
     st.needs_render = 1;
-    
+
     /* Initial render */
     render_frame(&st);
-    
+
     /* Main loop */
     char cmdbuf[CMD_MAX_LEN];
-    
+
     while (st.running) {
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(st.pipe_fd, &fds);
-        
+
         struct timeval tv = {.tv_sec = 0, .tv_usec = 1000000 / RENDER_FPS};
         int ret = select(st.pipe_fd + 1, &fds, NULL, NULL, &tv);
-        
+
         if (ret > 0 && FD_ISSET(st.pipe_fd, &fds)) {
             int len = pipe_read_command(&st, cmdbuf, sizeof(cmdbuf));
             if (len > 0) {
+                if (st.debug) {
+                    fprintf(stderr, "[debug] Received command: %s\n", cmdbuf);
+                }
                 handle_command(&st, cmdbuf);
             }
         }
-        
+
         /* Render if needed */
         if (st.needs_render) {
             render_frame(&st);
         }
     }
-    
+
     /* Cleanup */
     close(st.pipe_fd);
     unlink(st.pipe_path);
-    
+
     clear_all_elements(&st);
     free_image(&st.bg_image);
     font_unload_all();
     drm_cleanup(&st.drm);
-    
+
     if (!st.quiet)
         printf("splash-drm exited cleanly\n");
     return 0;
