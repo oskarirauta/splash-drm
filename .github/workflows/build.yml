@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: install libdrm
+      run: apt install libdrm-dev
     - name: submodules
       run: git submodule update --init --recursive --remote
     - name: make
