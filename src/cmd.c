@@ -89,6 +89,17 @@ static int get_gradient(cJSON *obj, const char *key, int default_val) {
     return default_val;
 }
 
+/* Image resample quality: "nearest" | "bilinear" | "bicubic" | "lanczos" */
+static int get_filter(cJSON *obj, const char *key, int default_val) {
+    const char *str = get_string(obj, key, NULL);
+    if (!str) return default_val;
+    if (strcasecmp(str, "nearest")  == 0) return IMG_NEAREST;
+    if (strcasecmp(str, "bilinear") == 0) return IMG_BILINEAR;
+    if (strcasecmp(str, "bicubic")  == 0) return IMG_BICUBIC;
+    if (strcasecmp(str, "lanczos")  == 0) return IMG_LANCZOS;
+    return default_val;
+}
+
 /* ========================================================================
  * Command Handlers
  * ======================================================================== */
@@ -160,6 +171,7 @@ static int cmd_image(splash_state_t *st, cJSON *args, int client_idx) {
     st->bg_loaded = 1;
     st->bg_scale_mode = get_scale_mode(args, "mode", SCALE_CONTAIN);
     st->bg_custom_scale = get_float(args, "scale", 1.0f);
+    st->bg_filter = get_filter(args, "filter", IMG_LANCZOS);
 
     st->needs_render = 1;
     send_response(st, client_idx, create_response("ok", NULL));
@@ -188,6 +200,13 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
     te->color = get_color(args, "color", rgb(255, 255, 255));
     te->font_slot = get_int(args, "font", 0);
     te->font_size = get_float(args, "size", 0);
+
+    /* Soft drop shadow: enabled with "shadow": true. */
+    te->shadow = cJSON_IsTrue(cJSON_GetObjectItem(args, "shadow"));
+    te->shadow_dx = get_int(args, "shadow_dx", 2);
+    te->shadow_dy = get_int(args, "shadow_dy", 2);
+    te->shadow_blur = get_int(args, "shadow_blur", 4);
+    te->shadow_color = get_color(args, "shadow_color", argb(160, 0, 0, 0));
 
     const char *text = get_string(args, "text", "");
     strncpy(te->text, text, sizeof(te->text) - 1);
@@ -287,6 +306,7 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
     ov->h = get_int(args, "h", 0);
     ov->align = get_align(args, "align", ALIGN_LEFT);
     ov->valign = get_valign(args, "valign", VALIGN_TOP);
+    ov->filter = get_filter(args, "filter", IMG_LANCZOS);
 
     const char *path = get_string(args, "path", NULL);
     if (!path) {

@@ -54,6 +54,15 @@
 #define SCALE_CUSTOM 4
 
 /* ========================================================================
+ * Image Filtering (resample quality)
+ * ======================================================================== */
+
+#define IMG_NEAREST  0
+#define IMG_BILINEAR 1
+#define IMG_BICUBIC  2   /* Mitchell-Netravali */
+#define IMG_LANCZOS  3   /* Lanczos-3 (default) */
+
+/* ========================================================================
  * Alignment Constants
  * ======================================================================== */
 
@@ -202,6 +211,12 @@ typedef struct {
     uint32_t color;
     int font_slot;
     float font_size;
+
+    /* Drop shadow (optional) */
+    int      shadow;
+    int      shadow_dx, shadow_dy;
+    int      shadow_blur;
+    uint32_t shadow_color;
 } text_element_t;
 
 typedef struct {
@@ -212,6 +227,7 @@ typedef struct {
     int w, h;
     int align;
     int valign;
+    int filter;
 } image_overlay_t;
 
 typedef struct {
@@ -280,7 +296,9 @@ typedef struct {
     int bg_loaded;
     int bg_scale_mode;
     float bg_custom_scale;
+    int bg_filter;          /* resample quality for the background image */
     uint32_t bg_color;
+
     text_element_t texts[MAX_TEXT_ELEMENTS];
     image_overlay_t overlays[MAX_IMAGE_OVERLAYS];
     rect_element_t rects[MAX_RECTANGLES];
@@ -321,7 +339,7 @@ void draw_round_rect_progress(drm_buffer_t *buf, float x, float y, float w, floa
 void draw_round_rect_shadow(drm_buffer_t *buf, float x, float y, float w, float h,
                             float radius, float blur, uint32_t color);
 void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
-    const uint8_t *rgba, int img_w, int img_h);
+    const uint8_t *rgba, int img_w, int img_h, int filter);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb);
 void draw_rect_element(drm_buffer_t *buf, rect_element_t *re);
