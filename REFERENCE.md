@@ -102,9 +102,9 @@ Set or replace the background image.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `path` | string | — | Image file path. PNG and JPEG are supported. Bare names are searched in standard prefixes (see README). |
-| `mode` | int | `0` | Scaling mode — see table below. |
+| `mode` | int or string | `1` | Scaling mode — see table below. |
 | `scale` | float | `1.0` | Scale factor. Only used when `mode` is `4` (custom). |
-| `filter` | int | `3` | Resampling filter — see table below. |
+| `filter` | int or string | `3` | Resampling filter — see table below. |
 | `crossfade` | int | `0` | Fade duration in milliseconds from the previous background image. `0` = instant replace. |
 
 **Scaling modes (`mode`)**
@@ -150,7 +150,7 @@ sub-pixel positioning.
 | `shadow_dx` | int | `2` | Shadow x offset in pixels. |
 | `shadow_dy` | int | `2` | Shadow y offset in pixels. |
 | `shadow_blur` | int | `4` | Shadow blur radius. `0` = hard shadow. |
-| `shadow_color` | color | `#00000080` | Shadow colour. |
+| `shadow_color` | color | `#000000a0` | Shadow colour. |
 | `opacity` | float | `1.0` | Master alpha. |
 
 ---
@@ -177,10 +177,10 @@ Supports rounded corners, gradient fills, and drop shadows.
 | `grad_color` | color | — | Second gradient stop. Only used when `grad_dir` is non-zero. |
 | `grad_dir` | int | `0` | Gradient direction: `0`=solid, `1`=vertical (top→bottom), `2`=horizontal (left→right), `3`=diagonal (top-left→bottom-right). |
 | `shadow` | bool | `false` | Drop shadow behind the rectangle. |
-| `shadow_dx` | int | `2` | Shadow x offset. |
-| `shadow_dy` | int | `2` | Shadow y offset. |
-| `shadow_blur` | int | `4` | Shadow blur radius. |
-| `shadow_color` | color | `#00000080` | Shadow colour. |
+| `shadow_dx` | int | `4` | Shadow x offset. |
+| `shadow_dy` | int | `6` | Shadow y offset. |
+| `shadow_blur` | int | `10` | Shadow blur radius. |
+| `shadow_color` | color | `#00000082` | Shadow colour. |
 | `opacity` | float | `1.0` | Master alpha. |
 
 ---
@@ -199,7 +199,7 @@ Add, update, or remove a bitmap image drawn on top of the background.
 | `h` | coord | `0` | Display height. `0` derives from `w` and aspect ratio, or uses native height. |
 | `align` | 0–2 | `1` | Horizontal anchor. |
 | `valign` | 0–2 | `1` | Vertical anchor. |
-| `filter` | int | `3` | Resampling filter (same values as `image`). |
+| `filter` | int or string | `3` (lanczos) | Resampling filter (same values as `image`). |
 | `opacity` | float | `1.0` | Master alpha. |
 
 ---
@@ -227,18 +227,18 @@ gradient fill, percentage label, and indeterminate (sweeping highlight) mode.
 | `border_color` | color | theme | Border colour. |
 | `text_color` | color | theme | Percentage label colour. |
 | `borderless` | bool | `false` | Suppress the border entirely. |
-| `border_width` | int | `1` | Border thickness in pixels. |
+| `border_width` | int | `2` | Border thickness in pixels. |
 | `radius` | int | `0` | Corner radius in pixels. |
 | `font_slot` | int | `0` | Font slot for the percentage label. |
 | `font_size` | float | `0` | Font size for the percentage label. `0` = auto (roughly half the bar height). |
 | `show_percent` | bool | `false` | Render the percentage value as text inside the bar. |
 | `indeterminate` | bool | `false` | Sweeping highlight mode: the fill animates back and forth regardless of `value`. Useful for "busy" states where actual progress is unknown. |
-| `indet_period_ms` | int | `1500` | Duration of one full sweep cycle in indeterminate mode. |
+| `indet_period_ms` | int | `1100` | Duration of one full sweep cycle in indeterminate mode. |
 | `shadow` | bool | `false` | Drop shadow behind the whole bar. |
-| `shadow_dx` | int | `2` | Shadow x offset. |
-| `shadow_dy` | int | `2` | Shadow y offset. |
-| `shadow_blur` | int | `4` | Shadow blur radius. |
-| `shadow_color` | color | `#00000080` | Shadow colour. |
+| `shadow_dx` | int | `0` | Shadow x offset. |
+| `shadow_dy` | int | `4` | Shadow y offset. |
+| `shadow_blur` | int | `12` | Shadow blur radius. |
+| `shadow_color` | color | `#00000078` | Shadow colour. |
 | `opacity` | float | `1.0` | Master alpha. |
 
 **`update_progress`** accepts `id`, `value`, and optionally `indeterminate`.
@@ -386,7 +386,7 @@ the daemon continues to process commands while it plays.
 | `from` | float | current opacity | Start opacity. If omitted, the element's current opacity is used. |
 | `to` | float | — | End opacity (required). |
 | `duration` | int | — | Animation duration in milliseconds (required). |
-| `easing` | string | `"linear"` | Easing curve — see table below. |
+| `easing` | string or int | `"ease_out"` | Easing curve — see table below. |
 | `repeat` | bool | `false` | Loop the animation in ping-pong fashion (`from`→`to`→`from`→…). |
 | `remove_on_end` | bool | `false` | Deactivate (remove) the element when the animation reaches its end. Useful for fade-out transitions. |
 

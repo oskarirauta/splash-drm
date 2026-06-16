@@ -68,9 +68,16 @@ static uint32_t get_color(cJSON *obj, const char *key, uint32_t default_val) {
 }
 
 static int get_align(cJSON *obj, const char *key, int default_val) {
-	const char *str = get_string(obj, key, NULL);
-	if (!str)
+	cJSON *item = cJSON_GetObjectItem(obj, key);
+	if (!item)
 		return default_val;
+	if (cJSON_IsNumber(item)) {
+		int v = item->valueint;
+		return (v >= ALIGN_LEFT && v <= ALIGN_RIGHT) ? v : default_val;
+	}
+	if (!cJSON_IsString(item))
+		return default_val;
+	const char *str = item->valuestring;
 	if (strcasecmp(str, "center") == 0 || strcasecmp(str, "c") == 0)
 		return ALIGN_CENTER;
 	if (strcasecmp(str, "right") == 0 || strcasecmp(str, "r") == 0)
@@ -79,9 +86,16 @@ static int get_align(cJSON *obj, const char *key, int default_val) {
 }
 
 static int get_valign(cJSON *obj, const char *key, int default_val) {
-	const char *str = get_string(obj, key, NULL);
-	if (!str)
+	cJSON *item = cJSON_GetObjectItem(obj, key);
+	if (!item)
 		return default_val;
+	if (cJSON_IsNumber(item)) {
+		int v = item->valueint;
+		return (v >= VALIGN_TOP && v <= VALIGN_BOTTOM) ? v : default_val;
+	}
+	if (!cJSON_IsString(item))
+		return default_val;
+	const char *str = item->valuestring;
 	if (strcasecmp(str, "middle") == 0 || strcasecmp(str, "m") == 0)
 		return VALIGN_MIDDLE;
 	if (strcasecmp(str, "bottom") == 0 || strcasecmp(str, "b") == 0)
@@ -90,10 +104,18 @@ static int get_valign(cJSON *obj, const char *key, int default_val) {
 }
 
 static int get_scale_mode(cJSON *obj, const char *key, int default_val) {
-	const char *str = get_string(obj, key, NULL);
-	if (!str)
+	cJSON *item = cJSON_GetObjectItem(obj, key);
+	if (!item)
 		return default_val;
+	if (cJSON_IsNumber(item)) {
+		int v = item->valueint;
+		return (v >= SCALE_COVER && v <= SCALE_CUSTOM) ? v : default_val;
+	}
+	if (!cJSON_IsString(item))
+		return default_val;
+	const char *str = item->valuestring;
 	if (strcasecmp(str, "cover")   == 0) return SCALE_COVER;
+	if (strcasecmp(str, "contain") == 0) return SCALE_CONTAIN;
 	if (strcasecmp(str, "stretch") == 0) return SCALE_STRETCH;
 	if (strcasecmp(str, "none")    == 0) return SCALE_NONE;
 	if (strcasecmp(str, "custom")  == 0) return SCALE_CUSTOM;
@@ -102,9 +124,16 @@ static int get_scale_mode(cJSON *obj, const char *key, int default_val) {
 
 /* Gradient direction: "vertical" | "horizontal" | "diagonal" | "none". */
 static int get_gradient(cJSON *obj, const char *key, int default_val) {
-	const char *str = get_string(obj, key, NULL);
-	if (!str)
+	cJSON *item = cJSON_GetObjectItem(obj, key);
+	if (!item)
 		return default_val;
+	if (cJSON_IsNumber(item)) {
+		int v = item->valueint;
+		return (v >= GRAD_NONE && v <= GRAD_DIAGONAL) ? v : default_val;
+	}
+	if (!cJSON_IsString(item))
+		return default_val;
+	const char *str = item->valuestring;
 	if (strcasecmp(str, "vertical")   == 0 || strcasecmp(str, "v") == 0)
 		return GRAD_VERTICAL;
 	if (strcasecmp(str, "horizontal") == 0 || strcasecmp(str, "h") == 0)
@@ -118,9 +147,16 @@ static int get_gradient(cJSON *obj, const char *key, int default_val) {
 
 /* Image resample quality: "nearest" | "bilinear" | "bicubic" | "lanczos". */
 static int get_filter(cJSON *obj, const char *key, int default_val) {
-	const char *str = get_string(obj, key, NULL);
-	if (!str)
+	cJSON *item = cJSON_GetObjectItem(obj, key);
+	if (!item)
 		return default_val;
+	if (cJSON_IsNumber(item)) {
+		int v = item->valueint;
+		return (v >= IMG_NEAREST && v <= IMG_LANCZOS) ? v : default_val;
+	}
+	if (!cJSON_IsString(item))
+		return default_val;
+	const char *str = item->valuestring;
 	if (strcasecmp(str, "nearest")  == 0) return IMG_NEAREST;
 	if (strcasecmp(str, "bilinear") == 0) return IMG_BILINEAR;
 	if (strcasecmp(str, "bicubic")  == 0) return IMG_BICUBIC;
@@ -130,9 +166,16 @@ static int get_filter(cJSON *obj, const char *key, int default_val) {
 
 /* Easing curve: "linear" | "ease_in" | "ease_out" | "ease_in_out". */
 static int get_easing(cJSON *obj, const char *key, int default_val) {
-	const char *str = get_string(obj, key, NULL);
-	if (!str)
+	cJSON *item = cJSON_GetObjectItem(obj, key);
+	if (!item)
 		return default_val;
+	if (cJSON_IsNumber(item)) {
+		int v = item->valueint;
+		return (v >= EASE_LINEAR && v <= EASE_IN_OUT) ? v : default_val;
+	}
+	if (!cJSON_IsString(item))
+		return default_val;
+	const char *str = item->valuestring;
 	if (strcasecmp(str, "linear")      == 0) return EASE_LINEAR;
 	if (strcasecmp(str, "ease_in")     == 0) return EASE_IN;
 	if (strcasecmp(str, "ease_out")    == 0) return EASE_OUT;
@@ -561,7 +604,7 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	/* Indeterminate mode: a sweeping highlight instead of a fixed fill,
 	 * for when the task has no measurable progress. */
 	pb->indeterminate   = cJSON_IsTrue(cJSON_GetObjectItem(args, "indeterminate"));
-	pb->indet_period_ms = (uint32_t)get_int(args, "indet_period", 1100);
+	pb->indet_period_ms = (uint32_t)get_int(args, "indet_period_ms", 1100);
 	pb->indet_start_ms  = now_ms();
 
 	/* Soft drop shadow of the whole bar. */
