@@ -22,9 +22,28 @@
  * Basic Rectangle Primitive
  * ======================================================================== */
 
-/* Opaque axis-aligned fill - used to clear the framebuffer each frame. */
+/*
+ * Premultiply a straight-alpha ARGB colour so that blend_pixel, which
+ * operates on premultiplied destinations, reads a consistent value from
+ * the buffer.  The identity for a=0 and a=255 avoids any computation on
+ * the common cases.
+ */
+static inline uint32_t premultiply(uint32_t color) {
+	uint8_t a = color >> 24;
+	if (a == 0 || a == 255)
+		return color;
+	uint8_t r = (uint8_t)((uint32_t)((color >> 16) & 0xFF) * a / 255);
+	uint8_t g = (uint8_t)((uint32_t)((color >>  8) & 0xFF) * a / 255);
+	uint8_t b = (uint8_t)((uint32_t)( color        & 0xFF) * a / 255);
+	return argb(a, r, g, b);
+}
+
+/* Axis-aligned fill - used to clear the framebuffer each frame. */
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h,
                       uint32_t color) {
+	/* Write in premultiplied form so blend_pixel reads a consistent
+	 * representation regardless of the colour's alpha value. */
+	color = premultiply(color);
 	int x0 = clamp(x,     0, (int)buf->width);
 	int y0 = clamp(y,     0, (int)buf->height);
 	int x1 = clamp(x + w, 0, (int)buf->width);
@@ -336,8 +355,10 @@ void draw_spinner(drm_buffer_t *buf, spinner_t *sp, uint64_t now) {
 		float scx = cx + ca * mid_r;		/* spoke centre */
 		float scy = cy + sa * mid_r;
 
-		/* Axis-aligned bounding box of this rotated capsule. */
-		float ex = (half_len > half_w ? half_len : half_w);
+		/* Axis-aligned bounding box of this rotated capsule.
+		 * The worst-case half-extent for any rotation is half_len + half_w
+		 * (achieved at 45°); using just max(half_len, half_w) clips tips. */
+		float ex = half_len + half_w;
 		int x0 = clamp((int)floorf(scx - ex), 0, (int)buf->width);
 		int y0 = clamp((int)floorf(scy - ex), 0, (int)buf->height);
 		int x1 = clamp((int)ceilf(scx + ex),  0, (int)buf->width);
@@ -767,6 +788,182 @@ void draw_rect_element(drm_buffer_t *buf, rect_element_t *re) {
 }
 
 /* ========================================================================
+ * Arc Progress Bar
+ * ======================================================================== */
+
+static inline float deg2rad(float d) {
+	return d * (float)(M_PI / 180.0);
+}
+
+/*
+ * Per-pixel coverage of an arc segment:
+ *   ring_alpha  — coverage from the ring SDF (inner/outer edge AA)
+ *   dist        — pixel distance from centre (for angular AA in pixel units)
+ *   ang_offset  — angle of this pixel from the arc's start, in radians [0, 2π)
+ *   arc_len     — arc length in radians
+ *
+ * Returns 0 if the pixel is outside the arc, otherwise ring_alpha multiplied
+ * by the soft edge factors at both angular boundaries (1-pixel AA).
+ */
+static float arc_pixel_alpha(float ring_alpha, float dist,
+                             float ang_offset, float arc_len) {
+	if (ring_alpha <= 0.0f || ang_offset < 0.0f || ang_offset > arc_len)
+		return 0.0f;
+	if (arc_len >= 2.0f * (float)M_PI - 0.001f)
+		return ring_alpha; /* full circle: no angular edges */
+	float da = dist * ang_offset;
+	float db = dist * (arc_len - ang_offset);
+	float ea = fclamp(da + 0.5f, 0.0f, 1.0f);
+	float eb = fclamp(db + 0.5f, 0.0f, 1.0f);
+	return ring_alpha * ea * eb;
+}
+
+void draw_arc_bar(drm_buffer_t *buf, arc_bar_t *ab, uint64_t now) {
+	float op = fclamp(ab->opacity, 0.0f, 1.0f);
+	if (op <= 0.0f || ab->radius <= 0)
+		return;
+
+	int cx = (ab->x < 0) ? (int)buf->width  / 2 : ab->x;
+	int cy = (ab->y < 0) ? (int)buf->height / 2 : ab->y;
+	int R  = ab->radius;
+
+	int thickness = (ab->thickness > 0) ? ab->thickness : (R / 4 > 0 ? R / 4 : 1);
+	if (thickness > R) thickness = R;
+
+	float mid_r  = (float)R - thickness * 0.5f;
+	float half_t = thickness * 0.5f;
+
+	float sweep_deg = (ab->sweep > 0.0f && ab->sweep < 360.0f) ? ab->sweep : 360.0f;
+	float sweep_rad = deg2rad(sweep_deg);
+	float start_rad = deg2rad(ab->start_angle);
+
+	/* Determine the filled portion (indeterminate overrides value). */
+	float fill_start_rad, fill_rad;
+	if (ab->indeterminate && ab->indet_period_ms > 0) {
+		float phase = fmodf((float)(now - ab->indet_start_ms) /
+		                    (float)ab->indet_period_ms, 1.0f);
+		fill_start_rad = start_rad + phase * sweep_rad;
+		fill_rad       = sweep_rad / 3.0f;
+	} else {
+		fill_start_rad = start_rad;
+		fill_rad       = fclamp(ab->value, 0.0f, 1.0f) * sweep_rad;
+	}
+
+	int has_bg   = (ab->bg_color >> 24) > 0;
+	int has_fill = (fill_rad > 0.001f);
+
+	int x0 = clamp(cx - R - 2, 0, (int)buf->width);
+	int y0 = clamp(cy - R - 2, 0, (int)buf->height);
+	int x1 = clamp(cx + R + 2, 0, (int)buf->width);
+	int y1 = clamp(cy + R + 2, 0, (int)buf->height);
+
+	/* Pass 1: background arc */
+	if (has_bg) {
+		for (int py = y0; py < y1; py++) {
+			uint32_t *row = (uint32_t *)(buf->map + py * buf->pitch);
+			for (int px = x0; px < x1; px++) {
+				float dx   = (float)px - cx + 0.5f;
+				float dy   = (float)py - cy + 0.5f;
+				float dist = sqrtf(dx*dx + dy*dy);
+				float ring = fclamp(0.5f - (fabsf(dist - mid_r) - half_t), 0.0f, 1.0f);
+				if (ring <= 0.0f) continue;
+
+				float ang = fmodf(atan2f(dy, dx) - start_rad, 2.0f*(float)M_PI);
+				if (ang < 0.0f) ang += 2.0f*(float)M_PI;
+
+				float a = arc_pixel_alpha(ring, dist, ang, sweep_rad);
+				if (a <= 0.0f) continue;
+				blend_pixel(&row[px], apply_opacity(ab->bg_color, a * op));
+			}
+		}
+	}
+
+	/* Pass 2: filled arc */
+	if (has_fill) {
+		int gradient = (ab->bar_gradient != GRAD_NONE) && ((ab->bar_color2 >> 24) > 0);
+		for (int py = y0; py < y1; py++) {
+			uint32_t *row = (uint32_t *)(buf->map + py * buf->pitch);
+			for (int px = x0; px < x1; px++) {
+				float dx   = (float)px - cx + 0.5f;
+				float dy   = (float)py - cy + 0.5f;
+				float dist = sqrtf(dx*dx + dy*dy);
+				float ring = fclamp(0.5f - (fabsf(dist - mid_r) - half_t), 0.0f, 1.0f);
+				if (ring <= 0.0f) continue;
+
+				float ang = fmodf(atan2f(dy, dx) - fill_start_rad, 2.0f*(float)M_PI);
+				if (ang < 0.0f) ang += 2.0f*(float)M_PI;
+
+				/* For indeterminate, the fill arc can wrap past the sweep boundary
+				 * and must also stay within the total sweep. */
+				float a;
+				if (ab->indeterminate) {
+					a = arc_pixel_alpha(ring, dist, ang, fill_rad);
+				} else {
+					/* Non-indeterminate: fill always starts at arc start, so
+					 * ang is the same offset from both start_rad and fill_start_rad.
+					 * Clamp to sweep_rad as well. */
+					float ang_from_start = ang; /* fill_start_rad == start_rad */
+					a = arc_pixel_alpha(ring, dist,
+					                    ang_from_start,
+					                    fclamp(fill_rad, 0.0f, sweep_rad));
+				}
+				if (a <= 0.0f) continue;
+
+				uint32_t c = gradient
+				             ? lerp_color(ab->bar_color, ab->bar_color2,
+				                         fclamp(ang / fill_rad, 0.0f, 1.0f))
+				             : ab->bar_color;
+				blend_pixel(&row[px], apply_opacity(c, a * op));
+			}
+		}
+	}
+
+	/* Pass 3: round end caps for the filled arc */
+	if (ab->cap && has_fill) {
+		float endpoints[2][2] = {
+			{ cx + mid_r * cosf(fill_start_rad),          cy + mid_r * sinf(fill_start_rad)          },
+			{ cx + mid_r * cosf(fill_start_rad + fill_rad), cy + mid_r * sinf(fill_start_rad + fill_rad) },
+		};
+		for (int side = 0; side < 2; side++) {
+			float capx = endpoints[side][0];
+			float capy = endpoints[side][1];
+			int bx0 = clamp((int)(capx - half_t) - 1, 0, (int)buf->width);
+			int by0 = clamp((int)(capy - half_t) - 1, 0, (int)buf->height);
+			int bx1 = clamp((int)(capx + half_t) + 2, 0, (int)buf->width);
+			int by1 = clamp((int)(capy + half_t) + 2, 0, (int)buf->height);
+			for (int py = by0; py < by1; py++) {
+				uint32_t *row = (uint32_t *)(buf->map + py * buf->pitch);
+				for (int px = bx0; px < bx1; px++) {
+					float dx = (float)px - capx + 0.5f;
+					float dy = (float)py - capy + 0.5f;
+					float a  = fclamp(half_t + 0.5f - sqrtf(dx*dx + dy*dy), 0.0f, 1.0f);
+					if (a <= 0.0f) continue;
+					blend_pixel(&row[px], apply_opacity(ab->bar_color, a * op));
+				}
+			}
+		}
+	}
+
+	/* Centre label */
+	if (ab->show_percent && ab->font_slot >= 0 && ab->font_size > 0.0f) {
+		text_element_t tmp;
+		memset(&tmp, 0, sizeof(tmp));
+		snprintf(tmp.text, sizeof(tmp.text), "%d%%",
+		         (int)(fclamp(ab->value, 0.0f, 1.0f) * 100.0f + 0.5f));
+		tmp.active    = 1;
+		tmp.x         = cx;
+		tmp.y         = cy;
+		tmp.align     = ALIGN_CENTER;
+		tmp.valign    = VALIGN_MIDDLE;
+		tmp.font_slot = ab->font_slot;
+		tmp.font_size = ab->font_size;
+		tmp.color     = ab->text_color;
+		tmp.opacity   = ab->opacity;
+		draw_text_element(buf, &tmp);
+	}
+}
+
+/* ========================================================================
  * Frame Rendering
  * ======================================================================== */
 
@@ -848,9 +1045,24 @@ void render_frame(splash_state_t *st) {
 			draw_progress_bar(buf, &st->bars[i]);
 	}
 
+	for (int i = 0; i < MAX_ARC_BARS; i++) {
+		if (st->arcs[i].active)
+			draw_arc_bar(buf, &st->arcs[i], now);
+	}
+
 	for (int i = 0; i < MAX_TEXT_ELEMENTS; i++) {
 		if (st->texts[i].active)
 			draw_text_element(buf, &st->texts[i]);
+	}
+
+	for (int i = 0; i < MAX_CONSOLES; i++) {
+		if (st->consoles[i].active)
+			draw_console_element(buf, &st->consoles[i]);
+	}
+
+	for (int i = 0; i < MAX_QR_ELEMENTS; i++) {
+		if (st->qrs[i].active)
+			draw_qr_element(buf, &st->qrs[i]);
 	}
 
 	for (int i = 0; i < MAX_SPINNERS; i++) {

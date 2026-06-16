@@ -76,11 +76,12 @@ static int run_opacity_anim(anim_t *a, uint64_t now,
 
 	if (t >= 1.0f) {
 		if (a->repeat && a->duration_ms > 0) {
-			/* Ping-pong: swap endpoints and restart from `now`. */
+			/* Ping-pong: swap endpoints and step the anchor by exactly
+			 * one period so render jitter does not accumulate. */
 			float tmp = a->from;
 			a->from     = a->to;
 			a->to       = tmp;
-			a->start_ms = now;
+			a->start_ms += a->duration_ms;
 			*opacity    = a->from;
 		} else {
 			*opacity  = a->to;
@@ -150,6 +151,29 @@ int anim_tick(splash_state_t *st, uint64_t now) {
 		/* An active spinner rotates every frame. */
 		if (sp->active)
 			active = 1;
+	}
+
+	for (int i = 0; i < MAX_ARC_BARS; i++) {
+		arc_bar_t *ab = &st->arcs[i];
+		if (ab->active && ab->anim.active)
+			active |= run_opacity_anim(&ab->anim, now,
+			                           &ab->opacity, &ab->active);
+		if (ab->active && ab->indeterminate)
+			active = 1;
+	}
+
+	for (int i = 0; i < MAX_CONSOLES; i++) {
+		console_t *con = &st->consoles[i];
+		if (con->active && con->anim.active)
+			active |= run_opacity_anim(&con->anim, now,
+			                           &con->opacity, &con->active);
+	}
+
+	for (int i = 0; i < MAX_QR_ELEMENTS; i++) {
+		qr_element_t *qr = &st->qrs[i];
+		if (qr->active && qr->anim.active)
+			active |= run_opacity_anim(&qr->anim, now,
+			                           &qr->opacity, &qr->active);
 	}
 
 	/* Background crossfade: the incoming image's opacity ramps 0 -> 1. */

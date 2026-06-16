@@ -24,6 +24,7 @@
 #include <poll.h>
 #include <time.h>
 #include <math.h>
+#include <limits.h>
 #include <libdrm/drm.h>
 #include <xf86drmMode.h>
 
@@ -33,13 +34,18 @@
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "3.2.0"
+#define SPLASH_VERSION      "3.5.0"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8
 #define MAX_RECTANGLES      16
 #define MAX_FONTS           5
 #define MAX_SPINNERS        4
+#define MAX_CONSOLES        2
+#define CONSOLE_MAX_LINES   64
+#define CONSOLE_LINE_LEN    256
+#define MAX_ARC_BARS        8
+#define MAX_QR_ELEMENTS     4
 #define CMD_MAX_LEN         8192
 #define MAX_FONT_SIZE       128
 #define RENDER_FPS          30
@@ -213,7 +219,6 @@ typedef struct {
 	int      line_gap;
 	float    pixel_height;
 	int      loaded;
-	char     path[256];
 } font_t;
 
 int  font_load(const char *path, float pixel_height, int slot);
@@ -249,6 +254,10 @@ typedef struct {
 	uint32_t color;
 	int      font_slot;
 	float    font_size;
+
+	/* Word wrap (optional) */
+	int      wrap;            /* non-zero: wrap long lines at word boundaries */
+	int      wrap_width;      /* max line width in pixels; 0 = buffer width */
 
 	/* Drop shadow (optional) */
 	int      shadow;
@@ -356,6 +365,66 @@ typedef struct {
 	anim_t   anim;
 } spinner_t;
 
+typedef struct {
+	int      active;
+	int      id;
+	int      x, y, w, h;     /* position and size in pixels */
+	int      font_slot;
+	float    font_size;
+	uint32_t color;           /* text colour */
+	uint32_t bg_color;        /* background fill; alpha 0 = transparent */
+	int      padding;         /* inner margin in pixels */
+	int      max_lines;       /* ring buffer capacity (≤ CONSOLE_MAX_LINES) */
+	int      line_count;      /* lines currently stored (≤ max_lines) */
+	int      head;            /* next write index in lines[] */
+	char     lines[CONSOLE_MAX_LINES][CONSOLE_LINE_LEN];
+	float    opacity;
+	anim_t   anim;
+} console_t;
+
+/* Circular / arc progress bar. Centre is at (x, y). */
+typedef struct {
+	int      active;
+	int      id;
+	int      x, y;           /* centre; <0 = screen centre on that axis */
+	int      radius;         /* outer radius in px */
+	int      thickness;      /* stroke width in px; 0 = radius/4 */
+	float    value;          /* 0.0 .. 1.0 */
+	float    start_angle;    /* degrees, 0=right (3 o'clock), CW; default -90 (top) */
+	float    sweep;          /* total arc degrees; 0 or ≥360 = full circle */
+	uint32_t bg_color;       /* background (unfilled) arc; alpha 0 = hidden */
+	uint32_t bar_color;      /* filled arc colour */
+	uint32_t bar_color2;     /* gradient second stop; ignored when bar_gradient==GRAD_NONE */
+	int      bar_gradient;   /* GRAD_NONE = solid */
+	int      cap;            /* 0 = flat ends, 1 = round end caps */
+	int      font_slot;
+	float    font_size;
+	uint32_t text_color;
+	int      show_percent;
+	float    opacity;
+	anim_t   anim;
+	int      indeterminate;
+	uint32_t indet_period_ms;
+	uint64_t indet_start_ms;
+} arc_bar_t;
+
+/* QR code element: encodes text and renders as a grid of modules. */
+typedef struct {
+	int      active;
+	int      id;
+	char     text[512];       /* payload to encode */
+	int      x, y;            /* position of top-left corner (after alignment) */
+	int      align;           /* ALIGN_*  - how x is interpreted */
+	int      valign;          /* VALIGN_* - how y is interpreted */
+	int      module_px;       /* pixels per module; 0 = auto (fill 1/4 screen) */
+	int      border;          /* quiet-zone width in modules (default 4) */
+	uint32_t color;           /* dark module colour (default opaque black) */
+	uint32_t bg_color;        /* light module colour; alpha 0 = transparent bg */
+	int      ecc;             /* error correction: 0=LOW 1=MED 2=QRTL 3=HIGH */
+	float    opacity;
+	anim_t   anim;
+} qr_element_t;
+
 /* ========================================================================
  * Main State
  * ======================================================================== */
@@ -386,11 +455,17 @@ typedef struct {
 	rect_element_t  rects[MAX_RECTANGLES];
 	progress_bar_t  bars[MAX_PROGRESS_BARS];
 	spinner_t       spinners[MAX_SPINNERS];
+	console_t       consoles[MAX_CONSOLES];
+	arc_bar_t       arcs[MAX_ARC_BARS];
+	qr_element_t    qrs[MAX_QR_ELEMENTS];
 
 	int      server_fd;
 	int      client_fds[MAX_SOCKET_CLIENTS];
 	size_t   client_cmd_len[MAX_SOCKET_CLIENTS];
 	char     client_cmd_buf[MAX_SOCKET_CLIENTS][CMD_MAX_LEN];
+
+	int      kbd_fd;             /* evdev keyboard fd, or -1 if none found */
+	int      hidden;             /* non-zero: splash blanked by ESC toggle */
 
 	int      running;
 	int      needs_render;
@@ -441,7 +516,10 @@ void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
                 const uint8_t *rgba, int img_w, int img_h,
                 int filter, float opacity);
 void draw_text_element(drm_buffer_t *buf, text_element_t *te);
+void draw_console_element(drm_buffer_t *buf, console_t *con);
+void draw_qr_element(drm_buffer_t *buf, qr_element_t *qr);
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb);
+void draw_arc_bar(drm_buffer_t *buf, arc_bar_t *ab, uint64_t now);
 void draw_rect_element(drm_buffer_t *buf, rect_element_t *re);
 void draw_spinner(drm_buffer_t *buf, spinner_t *sp, uint64_t now);
 void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
@@ -470,12 +548,27 @@ rect_element_t  *rect_find(splash_state_t *st, int id);
 rect_element_t  *rect_alloc(splash_state_t *st);
 spinner_t       *spinner_find(splash_state_t *st, int id);
 spinner_t       *spinner_alloc(splash_state_t *st);
+console_t       *console_find(splash_state_t *st, int id);
+console_t       *console_alloc(splash_state_t *st);
+progress_bar_t  *progress_find(splash_state_t *st, int id);
+arc_bar_t       *arc_find(splash_state_t *st, int id);
+arc_bar_t       *arc_alloc(splash_state_t *st);
+qr_element_t    *qr_find(splash_state_t *st, int id);
+qr_element_t    *qr_alloc(splash_state_t *st);
 void             clear_all_elements(splash_state_t *st);
 
 /* utils.c */
 void  set_default_progress_colors(progress_bar_t *pb, int style);
 int   clamp(int val, int min, int max);
 float fclamp(float val, float min, float max);
+int   resolve_font_path(const char *path, char *out, size_t outsz);
+int   resolve_image_path(const char *path, char *out, size_t outsz);
+int   get_coord(cJSON *obj, const char *key, int dim, int default_val);
+
+/* kbd.c */
+void kbd_init(splash_state_t *st);
+void kbd_cleanup(splash_state_t *st);
+void kbd_process(splash_state_t *st);
 
 /* main.c helpers */
 int load_config(splash_state_t *st, const char *config_str);

@@ -139,6 +139,111 @@ spinner_t *spinner_alloc(splash_state_t *st) {
 }
 
 /* ========================================================================
+ * Progress Bars
+ * ======================================================================== */
+
+progress_bar_t *progress_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
+		if (st->bars[i].active && st->bars[i].id == id)
+			return &st->bars[i];
+	}
+	return NULL;
+}
+
+/* ========================================================================
+ * Arc Progress Bars
+ * ======================================================================== */
+
+arc_bar_t *arc_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_ARC_BARS; i++) {
+		if (st->arcs[i].active && st->arcs[i].id == id)
+			return &st->arcs[i];
+	}
+	return NULL;
+}
+
+arc_bar_t *arc_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_ARC_BARS; i++) {
+		if (!st->arcs[i].active) {
+			memset(&st->arcs[i], 0, sizeof(arc_bar_t));
+			st->arcs[i].active  = 1;
+			st->arcs[i].opacity = 1.0f;
+			return &st->arcs[i];
+		}
+	}
+	return NULL;
+}
+
+/* ========================================================================
+ * Console Elements
+ * ======================================================================== */
+
+console_t *console_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_CONSOLES; i++) {
+		if (st->consoles[i].active && st->consoles[i].id == id)
+			return &st->consoles[i];
+	}
+	return NULL;
+}
+
+console_t *console_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_CONSOLES; i++) {
+		if (!st->consoles[i].active) {
+			memset(&st->consoles[i], 0, sizeof(console_t));
+			st->consoles[i].active  = 1;
+			st->consoles[i].opacity = 1.0f;
+			return &st->consoles[i];
+		}
+	}
+	return NULL;
+}
+
+/* ========================================================================
+ * QR Code Elements
+ * ======================================================================== */
+
+qr_element_t *qr_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_QR_ELEMENTS; i++) {
+		if (st->qrs[i].active && st->qrs[i].id == id)
+			return &st->qrs[i];
+	}
+	return NULL;
+}
+
+qr_element_t *qr_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_QR_ELEMENTS; i++) {
+		if (!st->qrs[i].active) {
+			memset(&st->qrs[i], 0, sizeof(qr_element_t));
+			st->qrs[i].active  = 1;
+			st->qrs[i].opacity = 1.0f;
+			return &st->qrs[i];
+		}
+	}
+	return NULL;
+}
+
+/* ========================================================================
  * Global Cleanup
  * ======================================================================== */
 
@@ -171,6 +276,15 @@ void clear_all_elements(splash_state_t *st) {
 		st->spinners[i].active = 0;
 		st->spinners[i].used   = 0;
 	}
+
+	for (int i = 0; i < MAX_CONSOLES; i++)
+		st->consoles[i].active = 0;
+
+	for (int i = 0; i < MAX_ARC_BARS; i++)
+		st->arcs[i].active = 0;
+
+	for (int i = 0; i < MAX_QR_ELEMENTS; i++)
+		st->qrs[i].active = 0;
 
 	/* Background, plus any crossfade still in flight. */
 	st->bg_loaded = 0;

@@ -97,6 +97,9 @@ static int _drm_ioctl(int fd, unsigned long request, void *arg) {
 		memset(&(var), 0, sizeof(var));  \
 	} while (0)
 
+static void _drmModeFreeResources(_drmModeRes *ptr);
+static void _drmModeFreeConnector(_drmModeConnector *ptr);
+
 static _drmModeRes *_drmModeGetResources(int fd) {
 	struct drm_mode_card_res res;
 	uint64_t fbs[64], crtcs[64], connectors[64], encoders[64];
@@ -138,24 +141,31 @@ static _drmModeRes *_drmModeGetResources(int fd) {
 
 	if (res.count_fbs) {
 		r->fbs = calloc(res.count_fbs, sizeof(uint32_t));
+		if (!r->fbs) goto oom;
 		memcpy(r->fbs, fbs, res.count_fbs * sizeof(uint32_t));
 	}
 	if (res.count_crtcs) {
 		r->crtcs = calloc(res.count_crtcs, sizeof(uint32_t));
+		if (!r->crtcs) goto oom;
 		memcpy(r->crtcs, crtcs, res.count_crtcs * sizeof(uint32_t));
 	}
 	if (res.count_connectors) {
 		r->connectors = calloc(res.count_connectors, sizeof(uint32_t));
+		if (!r->connectors) goto oom;
 		memcpy(r->connectors, connectors,
 		       res.count_connectors * sizeof(uint32_t));
 	}
 	if (res.count_encoders) {
 		r->encoders = calloc(res.count_encoders, sizeof(uint32_t));
+		if (!r->encoders) goto oom;
 		memcpy(r->encoders, encoders,
 		       res.count_encoders * sizeof(uint32_t));
 	}
 
 	return r;
+oom:
+	_drmModeFreeResources(r);
+	return NULL;
 }
 
 static void _drmModeFreeResources(_drmModeRes *ptr) {
@@ -247,12 +257,14 @@ static _drmModeConnector *_drmModeGetConnector(int fd, uint32_t connector_id) {
 
 	if (got_modes) {
 		c->modes = calloc(got_modes, sizeof(drmModeModeInfo));
+		if (!c->modes) goto oom;
 		memcpy(c->modes, modes_buf,
 		       got_modes * sizeof(drmModeModeInfo));
 	}
 	if (got_props) {
 		c->props       = calloc(got_props, sizeof(uint32_t));
 		c->prop_values = calloc(got_props, sizeof(uint64_t));
+		if (!c->props || !c->prop_values) goto oom;
 		memcpy(c->props, props_buf,
 		       got_props * sizeof(uint32_t));
 		memcpy(c->prop_values, propvals_buf,
@@ -260,11 +272,15 @@ static _drmModeConnector *_drmModeGetConnector(int fd, uint32_t connector_id) {
 	}
 	if (got_encs) {
 		c->encoders = calloc(got_encs, sizeof(uint32_t));
+		if (!c->encoders) goto oom;
 		memcpy(c->encoders, encs_buf,
 		       got_encs * sizeof(uint32_t));
 	}
 
 	return c;
+oom:
+	_drmModeFreeConnector(c);
+	return NULL;
 }
 
 static void _drmModeFreeConnector(_drmModeConnector *ptr) {

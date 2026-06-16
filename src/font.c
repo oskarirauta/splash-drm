@@ -41,6 +41,10 @@ int font_load(const char *path, float pixel_height, int slot) {
 
 	font_unload(slot);
 
+	char resolved[PATH_MAX];
+	if (resolve_font_path(path, resolved, sizeof(resolved)) == 0)
+		path = resolved;
+
 	FILE *fp = fopen(path, "rb");
 	if (!fp)
 		return -1;
@@ -86,8 +90,6 @@ int font_load(const char *path, float pixel_height, int slot) {
 	g_fonts[slot].line_gap = (int)(line_gap * g_fonts[slot].scale);
 	g_fonts[slot].baseline = g_fonts[slot].ascent;
 	g_fonts[slot].loaded   = 1;
-	strncpy(g_fonts[slot].path, path, sizeof(g_fonts[slot].path) - 1);
-
 	return 0;
 }
 
@@ -180,10 +182,39 @@ static float measure_line_scaled(stbtt_fontinfo *info, float scale,
  * Coverage Buffer Helpers
  * ======================================================================== */
 
-/* Composite an 8-bit coverage buffer onto the framebuffer in `color`. */
+/*
+ * Lookup table for sRGB re-encoding: g_srgb_lut[i] = sqrt(i/255) * 255.
+ * Indexed by a linear-light value in 0..255; result is the sRGB byte.
+ * Initialized once by init_srgb_lut() before the first draw call.
+ *
+ * Why: blending text coverage in sRGB (display) space makes 50% coverage
+ * appear as only ~21% brightness due to the display's gamma curve.  Blending
+ * in linear light and re-encoding to sRGB fixes this, producing visibly
+ * softer, more natural anti-aliased edges.
+ */
+static uint8_t g_srgb_lut[256];
+static int     g_srgb_lut_ready;
+
+static void init_srgb_lut(void) {
+	if (g_srgb_lut_ready)
+		return;
+	for (int i = 0; i < 256; i++)
+		g_srgb_lut[i] = (uint8_t)(sqrtf((float)i / 255.0f) * 255.0f + 0.5f);
+	g_srgb_lut_ready = 1;
+}
+
+/*
+ * Composite an 8-bit coverage buffer onto the framebuffer in `color`,
+ * blending in linearised light (gamma=2 approximation) for smooth AA edges.
+ *
+ * Source `color` is straight-alpha ARGB.  Destination is premultiplied ARGB.
+ * Un-premultiply the destination before linearising; re-premultiply output.
+ */
 static void composite_coverage(drm_buffer_t *buf, const uint8_t *cov,
                                int cov_w, int cov_h, int dx, int dy,
-                               uint32_t color) {
+                               uint32_t color,
+                               int clip_x0, int clip_y0,
+                               int clip_x1, int clip_y1) {
 	uint32_t ca = color >> 24;
 	uint8_t  cr = (color >> 16) & 0xFF;
 	uint8_t  cg = (color >>  8) & 0xFF;
@@ -191,23 +222,64 @@ static void composite_coverage(drm_buffer_t *buf, const uint8_t *cov,
 	if (ca == 0)
 		return;
 
+	/* Linearise source colour once (sRGB² / 255, result in 0..255). */
+	uint32_t slr = (uint32_t)cr * cr / 255;
+	uint32_t slg = (uint32_t)cg * cg / 255;
+	uint32_t slb = (uint32_t)cb * cb / 255;
+
 	for (int yy = 0; yy < cov_h; yy++) {
 		int py = dy + yy;
-		if (py < 0 || py >= (int)buf->height)
+		if (py < clip_y0 || py >= clip_y1)
 			continue;
 		const uint8_t *crow = cov + (size_t)yy * cov_w;
 		uint32_t *drow = (uint32_t *)(buf->map + py * buf->pitch);
 		for (int xx = 0; xx < cov_w; xx++) {
 			int px = dx + xx;
-			if (px < 0 || px >= (int)buf->width)
+			if (px < clip_x0 || px >= clip_x1)
 				continue;
 			uint8_t c = crow[xx];
 			if (c == 0)
 				continue;
-			uint32_t a = (ca * c) / 255;
+			uint32_t a = (ca * (uint32_t)c) / 255;
 			if (a == 0)
 				continue;
-			blend_pixel(&drow[px], argb((uint8_t)a, cr, cg, cb));
+
+			uint32_t d  = drow[px];
+			uint8_t  da = d >> 24;
+			uint8_t  dr = (d >> 16) & 0xFF;
+			uint8_t  dg = (d >>  8) & 0xFF;
+			uint8_t  db =  d        & 0xFF;
+
+			/* Un-premultiply destination to straight-alpha RGB. */
+			if (da > 0 && da < 255) {
+				dr = (uint8_t)((uint32_t)dr * 255 / da);
+				dg = (uint8_t)((uint32_t)dg * 255 / da);
+				db = (uint8_t)((uint32_t)db * 255 / da);
+			}
+
+			/* Linearise destination and blend in linear light.
+			 * With inv_a = 255-a, the sum slr*a + dlr*inv_a is bounded
+			 * by 255*255 = 65025, so dividing by 255 stays in 0..255. */
+			uint32_t inv_a = 255 - a;
+			uint32_t dlr   = (uint32_t)dr * dr / 255;
+			uint32_t dlg   = (uint32_t)dg * dg / 255;
+			uint32_t dlb   = (uint32_t)db * db / 255;
+
+			uint32_t rl = (slr * a + dlr * inv_a) / 255;
+			uint32_t gl = (slg * a + dlg * inv_a) / 255;
+			uint32_t bl = (slb * a + dlb * inv_a) / 255;
+
+			/* Re-encode to sRGB via the lookup table. */
+			uint8_t rr = g_srgb_lut[rl];
+			uint8_t rg = g_srgb_lut[gl];
+			uint8_t rb = g_srgb_lut[bl];
+
+			/* Output alpha and premultiplied RGB. */
+			uint32_t ra = a + (((uint32_t)da * inv_a) >> 8);
+			drow[px] = argb((uint8_t)ra,
+			                (uint8_t)((uint32_t)rr * ra / 255),
+			                (uint8_t)((uint32_t)rg * ra / 255),
+			                (uint8_t)((uint32_t)rb * ra / 255));
 		}
 	}
 }
@@ -334,6 +406,71 @@ static void rasterize_line(stbtt_fontinfo *info, float scale,
 }
 
 /* ========================================================================
+ * Word Wrap
+ * ======================================================================== */
+
+/*
+ * Reflow `src` into `dst` so that no line exceeds `max_w` pixels.
+ * Hard '\n' characters in the source are preserved and reset the line
+ * width. Spaces at word boundaries are replaced by '\n' when wrapping;
+ * a word that is wider than max_w on its own is placed on its own line
+ * rather than split mid-glyph.
+ */
+static void wrap_text(stbtt_fontinfo *info, float scale,
+                      const char *src, char *dst, size_t dst_sz, int max_w) {
+	int   adv, lsb;
+	stbtt_GetCodepointHMetrics(info, ' ', &adv, &lsb);
+	float space_w = adv * scale;
+
+	size_t      dpos   = 0;
+	float       line_w = 0.0f;
+	const char *p      = src;
+
+	while (*p && dpos < dst_sz - 1) {
+		/* Hard line break: propagate and reset. */
+		if (*p == '\n') {
+			dst[dpos++] = '\n';
+			line_w = 0.0f;
+			p++;
+			continue;
+		}
+
+		/* Skip inter-word spaces (we reinsert them ourselves). */
+		if (*p == ' ') {
+			p++;
+			continue;
+		}
+
+		/* Find end of word (ASCII-safe: UTF-8 bytes >0x7F never equal ' '/'\n'). */
+		const char *word = p;
+		while (*p && *p != ' ' && *p != '\n')
+			p++;
+		int   wlen  = (int)(p - word);
+		float word_w = measure_line_scaled(info, scale, word, wlen);
+
+		if (line_w > 0.0f) {
+			if (line_w + space_w + word_w > (float)max_w) {
+				/* Wrap: start a new line. */
+				if (dpos < dst_sz - 1)
+					dst[dpos++] = '\n';
+				line_w = 0.0f;
+			} else {
+				/* Fits on current line: add a space. */
+				if (dpos < dst_sz - 1)
+					dst[dpos++] = ' ';
+				line_w += space_w;
+			}
+		}
+
+		/* Copy the word. */
+		for (int i = 0; i < wlen && dpos < dst_sz - 1; i++)
+			dst[dpos++] = word[i];
+		line_w += word_w;
+	}
+	dst[dpos] = '\0';
+}
+
+/* ========================================================================
  * Text Rendering
  * ======================================================================== */
 
@@ -345,6 +482,8 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 	float op = te->opacity;
 	if (op <= 0.0f)
 		return;
+
+	init_srgb_lut();
 
 	stbtt_fontinfo *info = f->info;
 	float scale = f->scale;
@@ -361,13 +500,22 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 	if (line_adv < 1)
 		line_adv = 1;
 
+	/* Optional word wrap: reflow the text into a temporary buffer. */
+	char        wrap_buf[sizeof(te->text)];
+	const char *text_src = te->text;
+	if (te->wrap) {
+		int max_w = (te->wrap_width > 0) ? te->wrap_width : (int)buf->width;
+		wrap_text(info, scale, te->text, wrap_buf, sizeof(wrap_buf), max_w);
+		text_src = wrap_buf;
+	}
+
 	/* Split the text into lines on '\n'. */
 	const char *line_ptr[MAX_TEXT_LINES];
 	int         line_len[MAX_TEXT_LINES];
 	int nlines = 0;
 	{
-		const char *start = te->text;
-		for (const char *s = te->text;; s++) {
+		const char *start = text_src;
+		for (const char *s = text_src;; s++) {
 			if (*s == '\n' || *s == '\0') {
 				if (nlines < MAX_TEXT_LINES) {
 					line_ptr[nlines] = start;
@@ -452,14 +600,134 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 			composite_coverage(buf, sh, cov_w, cov_h,
 			                   origin_x + te->shadow_dx,
 			                   origin_y + te->shadow_dy,
-			                   apply_opacity(te->shadow_color, op));
+			                   apply_opacity(te->shadow_color, op),
+			                   0, 0,
+			                   (int)buf->width, (int)buf->height);
 			free(sh);
 		}
 	}
 
 	/* The text itself, sharp, on top. */
 	composite_coverage(buf, cov, cov_w, cov_h, origin_x, origin_y,
-	                   apply_opacity(te->color, op));
+	                   apply_opacity(te->color, op),
+	                   0, 0, (int)buf->width, (int)buf->height);
 
 	free(cov);
+}
+
+/* ========================================================================
+ * Console / Scrolling Log Area Rendering
+ * ======================================================================== */
+
+/*
+ * Render a console_t element: optional background fill, then the most
+ * recent lines anchored to the bottom of the console box (newer lines
+ * appear at the bottom; older lines scroll off the top when the buffer
+ * fills up). Text is clipped to the console rectangle.
+ */
+void draw_console_element(drm_buffer_t *buf, console_t *con) {
+	if (!con->active || con->w <= 0 || con->h <= 0 || con->line_count == 0)
+		return;
+
+	float op = con->opacity;
+	if (op <= 0.0f)
+		return;
+
+	/* Resolve negative-centre shorthand (same convention as other elements). */
+	int cx = (con->x < 0) ? ((int)buf->width  - con->w) / 2 : con->x;
+	int cy = (con->y < 0) ? ((int)buf->height - con->h) / 2 : con->y;
+	/* Temporarily patch the con fields so the rest of the function uses the
+	 * resolved coordinates without changing the stored state. */
+	int saved_x = con->x, saved_y = con->y;
+	con->x = cx; con->y = cy;
+
+	font_t *f = get_font(con->font_slot);
+	if (!f)
+		return;
+
+	stbtt_fontinfo *info  = f->info;
+	float           scale = f->scale;
+	if (con->font_size > 0.0f)
+		scale = stbtt_ScaleForPixelHeight(info, con->font_size);
+
+	init_srgb_lut();
+
+	int ascent, descent, line_gap;
+	stbtt_GetFontVMetrics(info, &ascent, &descent, &line_gap);
+	int asc_px   = (int)(ascent  * scale);
+	int desc_px  = (int)(descent * scale);   /* negative */
+	int th       = asc_px - desc_px;
+	int line_adv = th + (int)(line_gap * scale);
+	if (line_adv < 1)
+		line_adv = 1;
+
+	/* Optional background. */
+	if ((con->bg_color >> 24) > 0)
+		draw_filled_rect(buf, con->x, con->y, con->w, con->h,
+		                 apply_opacity(con->bg_color, op));
+
+	int pad      = con->padding;
+	int inner_h  = con->h - 2 * pad;
+	if (inner_h <= 0)
+		return;
+
+	int max_vis = inner_h / line_adv;
+	if (max_vis <= 0)
+		return;
+
+	/* How many lines to show: the most recent min(count, max_vis). */
+	int vis = con->line_count < max_vis ? con->line_count : max_vis;
+
+	/* Clip rectangle for compositing. */
+	int clip_x0 = con->x;
+	int clip_y0 = con->y;
+	int clip_x1 = con->x + con->w;
+	int clip_y1 = con->y + con->h;
+
+	/* "Grow from bottom": when fewer lines than max_vis, push them down
+	 * so that the newest line always sits at the bottom of the box. */
+	int top_y = con->y + pad + (max_vis - vis) * line_adv;
+
+	/* Iterate oldest-to-newest (top-to-bottom in display). */
+	int max_lines  = con->max_lines;
+	int oldest_idx = (con->head - vis + max_lines * 2) % max_lines;
+
+	uint32_t color = apply_opacity(con->color, op);
+
+	for (int i = 0; i < vis; i++) {
+		int         idx  = (oldest_idx + i) % max_lines;
+		const char *text = con->lines[idx];
+		if (!text[0])
+			continue;
+
+		int line_y = top_y + i * line_adv;   /* top pixel of the line */
+
+		if (line_y >= clip_y1)
+			break;
+		if (line_y + th < clip_y0)
+			continue;
+
+		int   tlen  = (int)strlen(text);
+		float lw    = measure_line_scaled(info, scale, text, tlen);
+		int   cov_w = (int)(lw + 0.5f) + 4;   /* +4 for glyph overhang */
+		int   cov_h = th + 4;
+		if (cov_w <= 0 || cov_h <= 0)
+			continue;
+
+		uint8_t *cov = calloc((size_t)cov_w * cov_h, 1);
+		if (!cov)
+			continue;
+
+		rasterize_line(info, scale, cov, cov_w, cov_h,
+		               2.0f, asc_px + 2, text, tlen);
+
+		composite_coverage(buf, cov, cov_w, cov_h,
+		                   con->x + pad - 2, line_y - 2,
+		                   color,
+		                   clip_x0, clip_y0, clip_x1, clip_y1);
+		free(cov);
+	}
+
+	con->x = saved_x;
+	con->y = saved_y;
 }

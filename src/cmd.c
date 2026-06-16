@@ -54,6 +54,14 @@ const char *get_string(cJSON *obj, const char *key, const char *default_val) {
 	return default_val;
 }
 
+/* Safe display-dimension accessors (fall back to 1920×1080 before DRM init). */
+static int sw(splash_state_t *st) {
+	return st->drm.buf[0].width  > 0 ? (int)st->drm.buf[0].width  : 1920;
+}
+static int sh(splash_state_t *st) {
+	return st->drm.buf[0].height > 0 ? (int)st->drm.buf[0].height : 1080;
+}
+
 static uint32_t get_color(cJSON *obj, const char *key, uint32_t default_val) {
 	const char *str = get_string(obj, key, NULL);
 	return str ? parse_color(str) : default_val;
@@ -167,7 +175,12 @@ static int cmd_status(splash_state_t *st, cJSON *args, int client_idx) {
 	cJSON *resp = create_response("ok", NULL);
 	cJSON_AddStringToObject(resp, "state",
 	                        st->frozen ? "suspended" : "running");
-	cJSON_AddBoolToObject(resp, "ready", st->ready);
+	cJSON_AddBoolToObject(resp, "ready",  st->ready);
+	cJSON_AddBoolToObject(resp, "hidden", st->hidden);
+	cJSON_AddNumberToObject(resp, "width",
+	                        (double)st->drm.buf[0].width);
+	cJSON_AddNumberToObject(resp, "height",
+	                        (double)st->drm.buf[0].height);
 	send_response(st, client_idx, resp);
 	return 0;
 }
@@ -296,13 +309,17 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	te->id        = id;
-	te->x         = get_int(args, "x", -1);
-	te->y         = get_int(args, "y", -1);
+	te->x         = get_coord(args, "x", sw(st), -1);
+	te->y         = get_coord(args, "y", sh(st), -1);
 	te->align     = get_align(args, "align", ALIGN_CENTER);
 	te->valign    = get_valign(args, "valign", VALIGN_MIDDLE);
 	te->color     = get_color(args, "color", rgb(255, 255, 255));
 	te->font_slot = get_int(args, "font", 0);
 	te->font_size = get_float(args, "size", 0);
+
+	/* Word wrap (optional; default off = clip at buffer edge). */
+	te->wrap       = cJSON_IsTrue(cJSON_GetObjectItem(args, "wrap"));
+	te->wrap_width = get_int(args, "wrap_width", 0);
 
 	/* Soft drop shadow. */
 	te->shadow       = cJSON_IsTrue(cJSON_GetObjectItem(args, "shadow"));
@@ -360,10 +377,10 @@ static int cmd_rect(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	re->id           = id;
-	re->x            = get_int(args, "x", -1);
-	re->y            = get_int(args, "y", -1);
-	re->w            = get_int(args, "w", 0);
-	re->h            = get_int(args, "h", 0);
+	re->x            = get_coord(args, "x", sw(st), -1);
+	re->y            = get_coord(args, "y", sh(st), -1);
+	re->w            = get_coord(args, "w", sw(st), 0);
+	re->h            = get_coord(args, "h", sh(st), 0);
 	re->align        = get_align(args, "align", ALIGN_CENTER);
 	re->valign       = get_valign(args, "valign", VALIGN_MIDDLE);
 	re->color        = get_color(args, "color", rgb(255, 255, 255));
@@ -417,6 +434,7 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	image_overlay_t *ov = overlay_find(st, id);
+	int fresh = (ov == NULL);
 	if (!ov)
 		ov = overlay_alloc(st);
 	if (!ov) {
@@ -426,10 +444,10 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	ov->id     = id;
-	ov->x      = get_int(args, "x", -1);
-	ov->y      = get_int(args, "y", -1);
-	ov->w      = get_int(args, "w", 0);
-	ov->h      = get_int(args, "h", 0);
+	ov->x      = get_coord(args, "x", sw(st), -1);
+	ov->y      = get_coord(args, "y", sh(st), -1);
+	ov->w      = get_coord(args, "w", sw(st), 0);
+	ov->h      = get_coord(args, "h", sh(st), 0);
 	ov->align  = get_align(args, "align", ALIGN_CENTER);
 	ov->valign = get_valign(args, "valign", VALIGN_MIDDLE);
 	ov->filter = get_filter(args, "filter", IMG_LANCZOS);
@@ -440,6 +458,7 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 
 	const char *path = get_string(args, "path", NULL);
 	if (!path) {
+		if (fresh) ov->active = 0;		/* release the slot we just claimed */
 		send_response(st, client_idx,
 		              create_response("error", "missing path"));
 		return -1;
@@ -447,6 +466,7 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 
 	free_image(&ov->img);
 	if (load_image(path, &ov->img) < 0) {
+		if (fresh) ov->active = 0;		/* release the slot we just claimed */
 		send_response(st, client_idx,
 		              create_response("error", "failed to load image"));
 		return -1;
@@ -474,15 +494,6 @@ static int cmd_remove_overlay(splash_state_t *st, cJSON *args, int client_idx) {
  * Progress Bar Commands
  * ======================================================================== */
 
-/* Locate an active progress bar by id, or NULL if there is none. */
-static progress_bar_t *progress_find(splash_state_t *st, int id) {
-	for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
-		if (st->bars[i].active && st->bars[i].id == id)
-			return &st->bars[i];
-	}
-	return NULL;
-}
-
 static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	int id = get_int(args, "id", -1);
 	if (id < 0) {
@@ -509,10 +520,10 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	pb->id           = id;
-	pb->x            = get_int(args, "x", -1);
-	pb->y            = get_int(args, "y", -1);
-	pb->w            = get_int(args, "w", 100);
-	pb->h            = get_int(args, "h", 20);
+	pb->x            = get_coord(args, "x", sw(st), -1);
+	pb->y            = get_coord(args, "y", sh(st), -1);
+	pb->w            = get_coord(args, "w", sw(st), 100);
+	pb->h            = get_coord(args, "h", sh(st), 20);
 	pb->align        = get_align(args, "align", ALIGN_CENTER);
 	pb->valign       = get_valign(args, "valign", VALIGN_MIDDLE);
 	pb->style        = get_int(args, "style", 0);
@@ -525,22 +536,23 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	pb->show_percent = cJSON_IsTrue(cJSON_GetObjectItem(args, "show_percent"));
 
 	/* Any explicit colour switches the bar to a custom style (-1). */
-	cJSON *bg     = cJSON_GetObjectItem(args, "bg_color");
-	cJSON *bar    = cJSON_GetObjectItem(args, "bar_color");
-	cJSON *border = cJSON_GetObjectItem(args, "border_color");
-	cJSON *text   = cJSON_GetObjectItem(args, "text_color");
-	int has_custom_color = (bg || bar || border || text);
+	int has_custom_color = (
+		cJSON_GetObjectItem(args, "bg_color")     ||
+		cJSON_GetObjectItem(args, "bar_color")    ||
+		cJSON_GetObjectItem(args, "border_color") ||
+		cJSON_GetObjectItem(args, "text_color")
+	);
 	if (has_custom_color)
 		pb->style = -1;
 
 	set_default_progress_colors(pb, pb->style);
 
-	if (has_custom_color) {
-		if (bg)     pb->bg_color     = parse_color(bg->valuestring);
-		if (bar)    pb->bar_color    = parse_color(bar->valuestring);
-		if (border) pb->border_color = parse_color(border->valuestring);
-		if (text)   pb->text_color   = parse_color(text->valuestring);
-	}
+	/* Use get_color() so non-string JSON values fall back to the current
+	 * colour rather than silently producing white via parse_color(NULL). */
+	pb->bg_color     = get_color(args, "bg_color",     pb->bg_color);
+	pb->bar_color    = get_color(args, "bar_color",    pb->bar_color);
+	pb->border_color = get_color(args, "border_color", pb->border_color);
+	pb->text_color   = get_color(args, "text_color",   pb->text_color);
 
 	/* Gradient for the fill. */
 	pb->bar_gradient = get_gradient(args, "gradient", GRAD_NONE);
@@ -612,6 +624,17 @@ static int cmd_hide_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
+static int cmd_remove_progress(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	progress_bar_t *pb = progress_find(st, id);
+	if (pb) {
+		memset(pb, 0, sizeof(*pb));
+		st->needs_render = 1;
+	}
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
 /* ========================================================================
  * Animation Command
  *
@@ -675,6 +698,24 @@ static int cmd_animate(splash_state_t *st, cJSON *args, int client_idx) {
 		if (sp) {
 			opacity = &sp->opacity;
 			anim    = &sp->anim;
+		}
+	} else if (strcasecmp(type, "arc") == 0) {
+		arc_bar_t *ab = arc_find(st, id);
+		if (ab) {
+			opacity = &ab->opacity;
+			anim    = &ab->anim;
+		}
+	} else if (strcasecmp(type, "console") == 0) {
+		console_t *con = console_find(st, id);
+		if (con) {
+			opacity = &con->opacity;
+			anim    = &con->anim;
+		}
+	} else if (strcasecmp(type, "qr") == 0) {
+		qr_element_t *qr = qr_find(st, id);
+		if (qr) {
+			opacity = &qr->opacity;
+			anim    = &qr->anim;
 		}
 	} else {
 		send_response(st, client_idx,
@@ -793,16 +834,16 @@ static int cmd_spinner(splash_state_t *st, cJSON *args, int client_idx) {
 	if (fresh) {
 		/* Brand-new spinner: JSON values, or sane defaults. */
 		sp->id        = id;
-		sp->x         = get_int(args, "x", -1);
-		sp->y         = get_int(args, "y", -1);
+		sp->x         = get_coord(args, "x", sw(st), -1);
+		sp->y         = get_coord(args, "y", sh(st), -1);
 		sp->radius    = get_int(args, "radius", 36);
 		sp->spokes    = get_int(args, "spokes", 12);
 		sp->color     = get_color(args, "color", rgb(255, 255, 255));
 		sp->period_ms = (uint32_t)get_int(args, "period", 900);
 	} else {
 		/* Existing spinner: keep every field the caller omits. */
-		sp->x         = get_int(args, "x", sp->x);
-		sp->y         = get_int(args, "y", sp->y);
+		sp->x         = get_coord(args, "x", sw(st), sp->x);
+		sp->y         = get_coord(args, "y", sh(st), sp->y);
 		sp->radius    = get_int(args, "radius", sp->radius);
 		sp->spokes    = get_int(args, "spokes", sp->spokes);
 		sp->color     = get_color(args, "color", sp->color);
@@ -856,6 +897,390 @@ typedef struct {
 	int (*handler)(splash_state_t *, cJSON *, int);
 } cmd_entry_t;
 
+/* ========================================================================
+ * Console Commands
+ * ======================================================================== */
+
+static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	if (id < 0) {
+		send_response(st, client_idx,
+		              create_response("error", "missing id"));
+		return -1;
+	}
+
+	console_t *con   = console_find(st, id);
+	int        fresh = (con == NULL);
+	if (!con)
+		con = console_alloc(st);
+	if (!con) {
+		send_response(st, client_idx,
+		              create_response("error", "no slots"));
+		return -1;
+	}
+
+	con->id        = id;
+	con->x         = get_coord(args, "x", sw(st), 0);
+	con->y         = get_coord(args, "y", sh(st), 0);
+	con->w         = get_coord(args, "w", sw(st), 400);
+	con->h         = get_coord(args, "h", sh(st), 200);
+	con->font_slot = get_int(args, "font", 0);
+	con->font_size = get_float(args, "size", 0);
+	con->color     = get_color(args, "color", rgb(255, 255, 255));
+	con->bg_color  = get_color(args, "bg_color", 0);
+	con->padding   = get_int(args, "padding", 4);
+	con->opacity   = get_float(args, "opacity", 1.0f);
+	con->active    = 1;
+
+	/* max_lines: settable on creation; changing it resets the buffer. */
+	int new_max = get_int(args, "max_lines", fresh ? 32 : con->max_lines);
+	new_max = clamp(new_max, 1, CONSOLE_MAX_LINES);
+	if (fresh || new_max != con->max_lines) {
+		con->max_lines  = new_max;
+		con->line_count = 0;
+		con->head       = 0;
+		memset(con->lines, 0, sizeof(con->lines));
+	}
+
+	st->needs_render = 1;
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+static int cmd_console_write(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	console_t *con = console_find(st, id);
+	if (!con) {
+		send_response(st, client_idx,
+		              create_response("error", "console not found"));
+		return -1;
+	}
+
+	const char *text = get_string(args, "text", NULL);
+	if (!text) {
+		send_response(st, client_idx,
+		              create_response("error", "missing text"));
+		return -1;
+	}
+
+	/* Split on '\n' and push each segment as a separate line. */
+	const char *p = text;
+	while (*p) {
+		const char *end = p;
+		while (*end && *end != '\n')
+			end++;
+
+		int len = (int)(end - p);
+		if (len >= CONSOLE_LINE_LEN)
+			len = CONSOLE_LINE_LEN - 1;
+		memcpy(con->lines[con->head], p, (size_t)len);
+		con->lines[con->head][len] = '\0';
+
+		con->head = (con->head + 1) % con->max_lines;
+		if (con->line_count < con->max_lines)
+			con->line_count++;
+
+		p = (*end == '\n') ? end + 1 : end;
+	}
+
+	st->needs_render = 1;
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+static int cmd_remove_console(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	console_t *con = console_find(st, id);
+	if (con) {
+		con->active      = 0;
+		st->needs_render = 1;
+	}
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+/* ========================================================================
+ * Query – inspect current element state
+ * ======================================================================== */
+
+static int cmd_query(splash_state_t *st, cJSON *args, int client_idx) {
+	const char *type = get_string(args, "type", NULL);
+	int id = get_int(args, "id", -1);
+	if (!type || id < 0) {
+		send_response(st, client_idx,
+		              create_response("error", "missing type or id"));
+		return -1;
+	}
+
+	cJSON *resp = create_response("ok", NULL);
+
+	if (strcmp(type, "text") == 0) {
+		text_element_t *e = text_find(st, id);
+		if (!e) goto not_found;
+		cJSON_AddStringToObject(resp, "text", e->text);
+		cJSON_AddNumberToObject(resp, "x",    e->x);
+		cJSON_AddNumberToObject(resp, "y",    e->y);
+		cJSON_AddNumberToObject(resp, "opacity", (double)e->opacity);
+
+	} else if (strcmp(type, "rect") == 0) {
+		rect_element_t *e = rect_find(st, id);
+		if (!e) goto not_found;
+		cJSON_AddNumberToObject(resp, "x", e->x);
+		cJSON_AddNumberToObject(resp, "y", e->y);
+		cJSON_AddNumberToObject(resp, "w", e->w);
+		cJSON_AddNumberToObject(resp, "h", e->h);
+		cJSON_AddNumberToObject(resp, "opacity", (double)e->opacity);
+
+	} else if (strcmp(type, "overlay") == 0) {
+		image_overlay_t *e = overlay_find(st, id);
+		if (!e) goto not_found;
+		cJSON_AddNumberToObject(resp, "x", e->x);
+		cJSON_AddNumberToObject(resp, "y", e->y);
+		cJSON_AddNumberToObject(resp, "w", e->w);
+		cJSON_AddNumberToObject(resp, "h", e->h);
+		cJSON_AddNumberToObject(resp, "opacity", (double)e->opacity);
+
+	} else if (strcmp(type, "progress") == 0) {
+		progress_bar_t *e = NULL;
+		for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
+			if (st->bars[i].active && st->bars[i].id == id) { e = &st->bars[i]; break; }
+		}
+		if (!e) goto not_found;
+		cJSON_AddNumberToObject(resp, "value",   (double)e->value);
+		cJSON_AddNumberToObject(resp, "x",       e->x);
+		cJSON_AddNumberToObject(resp, "y",       e->y);
+		cJSON_AddNumberToObject(resp, "w",       e->w);
+		cJSON_AddNumberToObject(resp, "h",       e->h);
+		cJSON_AddNumberToObject(resp, "opacity", (double)e->opacity);
+
+	} else if (strcmp(type, "arc") == 0) {
+		arc_bar_t *e = arc_find(st, id);
+		if (!e) goto not_found;
+		cJSON_AddNumberToObject(resp, "value",   (double)e->value);
+		cJSON_AddNumberToObject(resp, "x",       e->x);
+		cJSON_AddNumberToObject(resp, "y",       e->y);
+		cJSON_AddNumberToObject(resp, "radius",  e->radius);
+		cJSON_AddNumberToObject(resp, "opacity", (double)e->opacity);
+
+	} else if (strcmp(type, "spinner") == 0) {
+		spinner_t *e = spinner_find(st, id);
+		if (!e) goto not_found;
+		cJSON_AddBoolToObject  (resp, "active",  e->active);
+		cJSON_AddNumberToObject(resp, "x",       e->x);
+		cJSON_AddNumberToObject(resp, "y",       e->y);
+		cJSON_AddNumberToObject(resp, "opacity", (double)e->opacity);
+
+	} else if (strcmp(type, "console") == 0) {
+		console_t *e = console_find(st, id);
+		if (!e) goto not_found;
+		cJSON_AddNumberToObject(resp, "x",          e->x);
+		cJSON_AddNumberToObject(resp, "y",          e->y);
+		cJSON_AddNumberToObject(resp, "w",          e->w);
+		cJSON_AddNumberToObject(resp, "h",          e->h);
+		cJSON_AddNumberToObject(resp, "line_count", e->line_count);
+		cJSON_AddNumberToObject(resp, "opacity",    (double)e->opacity);
+
+	} else if (strcmp(type, "qr") == 0) {
+		qr_element_t *e = qr_find(st, id);
+		if (!e) goto not_found;
+		cJSON_AddStringToObject(resp, "text", e->text);
+		cJSON_AddNumberToObject(resp, "x",    e->x);
+		cJSON_AddNumberToObject(resp, "y",    e->y);
+		cJSON_AddNumberToObject(resp, "opacity", (double)e->opacity);
+
+	} else {
+		cJSON_Delete(resp);
+		send_response(st, client_idx,
+		              create_response("error", "unknown type"));
+		return -1;
+	}
+
+	send_response(st, client_idx, resp);
+	return 0;
+
+not_found:
+	cJSON_Delete(resp);
+	send_response(st, client_idx, create_response("error", "not found"));
+	return -1;
+}
+
+/* ========================================================================
+ * Arc Progress Bar Commands
+ * ======================================================================== */
+
+static int cmd_arc(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	if (id < 0) {
+		send_response(st, client_idx,
+		              create_response("error", "missing id"));
+		return -1;
+	}
+
+	arc_bar_t *ab    = arc_find(st, id);
+	int        fresh = (ab == NULL);
+	if (!ab)
+		ab = arc_alloc(st);
+	if (!ab) {
+		send_response(st, client_idx,
+		              create_response("error", "no free arc slots"));
+		return -1;
+	}
+
+	ab->id          = id;
+	ab->x           = get_coord(args, "x", sw(st), ab->x);
+	ab->y           = get_coord(args, "y", sh(st), ab->y);
+	ab->radius      = get_int(args, "radius",    fresh ? 80  : ab->radius);
+	ab->thickness   = get_int(args, "thickness", fresh ? 0   : ab->thickness);
+	ab->start_angle = get_float(args, "start_angle", fresh ? -90.0f : ab->start_angle);
+	ab->sweep       = get_float(args, "sweep",        fresh ? 360.0f : ab->sweep);
+	ab->value       = fclamp(get_float(args, "value", ab->value), 0.0f, 1.0f);
+	ab->cap         = get_int(args, "cap",         ab->cap);
+	ab->bar_gradient = get_int(args, "bar_gradient", ab->bar_gradient);
+	ab->font_slot   = get_int(args, "font_slot",   fresh ? -1   : ab->font_slot);
+	ab->font_size   = get_float(args, "font_size", fresh ? 0.0f : ab->font_size);
+	ab->show_percent = get_int(args, "show_percent", ab->show_percent);
+	ab->opacity     = get_float(args, "opacity", fresh ? 1.0f : ab->opacity);
+
+	const char *bg  = get_string(args, "bg_color",    NULL);
+	const char *bar = get_string(args, "bar_color",   NULL);
+	const char *bar2 = get_string(args, "bar_color2", NULL);
+	const char *tc  = get_string(args, "text_color",  NULL);
+	if (bg)   ab->bg_color   = parse_color(bg);
+	else if (fresh) ab->bg_color = 0x80808080u;
+	if (bar)  ab->bar_color  = parse_color(bar);
+	else if (fresh) ab->bar_color = 0xFFFFFFFFu;
+	if (bar2) ab->bar_color2 = parse_color(bar2);
+	if (tc)   ab->text_color = parse_color(tc);
+	else if (fresh) ab->text_color = 0xFFFFFFFFu;
+
+	int indet = get_int(args, "indeterminate", -1);
+	if (indet >= 0) {
+		if (indet && !ab->indeterminate)
+			ab->indet_start_ms = now_ms();
+		ab->indeterminate = indet;
+	} else if (fresh) {
+		ab->indeterminate = 0;
+	}
+	ab->indet_period_ms = (uint32_t)get_int(args, "indet_period_ms",
+	                                        fresh ? 1200 : (int)ab->indet_period_ms);
+
+	ab->active       = 1;
+	st->needs_render = 1;
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+static int cmd_update_arc(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	arc_bar_t *ab = arc_find(st, id);
+	if (!ab) {
+		send_response(st, client_idx,
+		              create_response("error", "arc not found"));
+		return -1;
+	}
+
+	ab->value = fclamp(get_float(args, "value", ab->value), 0.0f, 1.0f);
+
+	const char *bar = get_string(args, "bar_color", NULL);
+	if (bar) ab->bar_color = parse_color(bar);
+
+	st->needs_render = 1;
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+static int cmd_hide_arc(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	arc_bar_t *ab = arc_find(st, id);
+	if (ab) {
+		ab->active       = 0;
+		st->needs_render = 1;
+	}
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+static int cmd_remove_arc(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	arc_bar_t *ab = arc_find(st, id);
+	if (ab) {
+		memset(ab, 0, sizeof(*ab));
+		st->needs_render = 1;
+	}
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+/* ========================================================================
+ * QR Code Commands
+ * ======================================================================== */
+
+static int cmd_qr(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	if (id < 0) {
+		send_response(st, client_idx,
+		              create_response("error", "missing id"));
+		return -1;
+	}
+
+	const char *text = get_string(args, "text", NULL);
+	if (!text || !text[0]) {
+		send_response(st, client_idx,
+		              create_response("error", "missing text"));
+		return -1;
+	}
+
+	qr_element_t *qr = qr_find(st, id);
+	if (!qr)
+		qr = qr_alloc(st);
+	if (!qr) {
+		send_response(st, client_idx,
+		              create_response("error", "no free QR slots"));
+		return -1;
+	}
+
+	qr->id        = id;
+	qr->x         = get_coord(args, "x", sw(st), 0);
+	qr->y         = get_coord(args, "y", sh(st), 0);
+	qr->align     = get_int(args, "align",  ALIGN_LEFT);
+	qr->valign    = get_int(args, "valign", VALIGN_TOP);
+	qr->module_px = get_int(args, "module_px", 0);
+	qr->border    = get_int(args, "border",    4);
+	qr->ecc       = get_int(args, "ecc",       1);  /* MEDIUM */
+	qr->opacity   = get_float(args, "opacity", 1.0f);
+
+	const char *col    = get_string(args, "color",    "#000000ff");
+	const char *bg_col = get_string(args, "bg_color", "#ffffffff");
+	qr->color    = parse_color(col);
+	qr->bg_color = parse_color(bg_col);
+
+	strncpy(qr->text, text, sizeof(qr->text) - 1);
+	qr->text[sizeof(qr->text) - 1] = '\0';
+
+	qr->anim.active  = 0;
+	qr->active       = 1;
+	st->needs_render = 1;
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+static int cmd_remove_qr(splash_state_t *st, cJSON *args, int client_idx) {
+	int id = get_int(args, "id", -1);
+	if (id < 0) {
+		send_response(st, client_idx,
+		              create_response("error", "missing id"));
+		return -1;
+	}
+
+	qr_element_t *qr = qr_find(st, id);
+	if (qr) {
+		qr->active       = 0;
+		st->needs_render = 1;
+	}
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
 static const cmd_entry_t cmd_table[] = {
 	{ "exit",            cmd_exit            },
 	{ "suspend",         cmd_suspend         },
@@ -874,8 +1299,19 @@ static const cmd_entry_t cmd_table[] = {
 	{ "progress",        cmd_progress        },
 	{ "update_progress", cmd_update_progress },
 	{ "hide_progress",   cmd_hide_progress   },
+	{ "remove_progress", cmd_remove_progress },
 	{ "animate",         cmd_animate         },
 	{ "spinner",         cmd_spinner         },
+	{ "console",         cmd_console         },
+	{ "console_write",   cmd_console_write   },
+	{ "remove_console",  cmd_remove_console  },
+	{ "query",           cmd_query           },
+	{ "arc",             cmd_arc             },
+	{ "update_arc",      cmd_update_arc      },
+	{ "hide_arc",        cmd_hide_arc        },
+	{ "remove_arc",      cmd_remove_arc      },
+	{ "qr",              cmd_qr              },
+	{ "remove_qr",       cmd_remove_qr       },
 	{ NULL,              NULL                }
 };
 
@@ -916,7 +1352,10 @@ int process_json_batch(splash_state_t *st, cJSON *root, int client_idx) {
 			cJSON *cmd = cJSON_GetArrayItem(root, i);
 			if (!cJSON_IsObject(cmd))
 				continue;
-			if (process_single_cmd(st, cmd, client_idx) < 0)
+			/* Suppress per-command replies inside a batch: the client
+			 * reads only one newline-terminated response per send(), so
+			 * only the batch summary below should reach it. */
+			if (process_single_cmd(st, cmd, -1) < 0)
 				errors++;
 		}
 

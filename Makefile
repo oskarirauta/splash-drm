@@ -16,15 +16,16 @@
 
 CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -D_GNU_SOURCE -Wno-unused-function \
-           -I. -I$(INCDIR) -I/usr/include/libdrm
+           -I. -I$(INCDIR) -I$(QRDIR) -I/usr/include/libdrm
 LDFLAGS ?= -lm
 
-SRCDIR   = src
-INCDIR   = include
-OBJDIR   = obj
-CJSONDIR = cJSON
+SRCDIR    = src
+INCDIR    = include
+OBJDIR    = obj
+CJSONDIR  = cJSON
+QRDIR     = qrcodegen/c
 
-# Daemon sources (src/); the vendored cJSON unit is built by its own rule.
+# Daemon sources (src/); the vendored cJSON and qrcodegen units are built by their own rules.
 SOURCES = $(SRCDIR)/main.c \
           $(SRCDIR)/drm.c \
           $(SRCDIR)/render.c \
@@ -34,9 +35,11 @@ SOURCES = $(SRCDIR)/main.c \
           $(SRCDIR)/anim.c \
           $(SRCDIR)/socket.c \
           $(SRCDIR)/cmd.c \
-          $(SRCDIR)/utils.c
+          $(SRCDIR)/utils.c \
+          $(SRCDIR)/kbd.c \
+          $(SRCDIR)/qr.c
 
-OBJECTS     = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES)) $(OBJDIR)/cJSON.o
+OBJECTS     = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES)) $(OBJDIR)/cJSON.o $(OBJDIR)/qrcodegen.o
 CTL_OBJECTS = $(OBJDIR)/splash-ctl.o
 
 TARGET     = splash-drm
@@ -59,6 +62,10 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 
 # Vendored cJSON lives outside src/, so it needs a rule of its own.
 $(OBJDIR)/cJSON.o: $(CJSONDIR)/cJSON.c | $(OBJDIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Vendored qrcodegen likewise lives outside src/.
+$(OBJDIR)/qrcodegen.o: $(QRDIR)/qrcodegen.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJECTS)

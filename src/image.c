@@ -29,6 +29,10 @@ int load_image(const char *path, image_t *img) {
 	if (!path || !img)
 		return -1;
 
+	char resolved[PATH_MAX];
+	if (resolve_image_path(path, resolved, sizeof(resolved)) == 0)
+		path = resolved;
+
 	int fd = open(path, O_RDONLY | O_CLOEXEC);
 	if (fd < 0)
 		return -1;

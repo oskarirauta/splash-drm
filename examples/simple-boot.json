@@ -1,0 +1,29 @@
+[
+  {"cmd": "bg_color", "color": "#1a1a2e"},
+
+  {"cmd": "image",
+   "path": "logo.png",
+   "mode": 3,
+   "filter": 3},
+
+  {"cmd": "arc",
+   "id": 0,
+   "x": -1, "y": "75%",
+   "radius": 36,
+   "thickness": 5,
+   "value": 0.0,
+   "start_angle": -90,
+   "sweep": 360,
+   "bg_color": "#ffffff20",
+   "bar_color": "#ffffff",
+   "cap": 1},
+
+  {"cmd": "text",
+   "id": 0,
+   "x": -1, "y": "85%",
+   "align": "center",
+   "text": "Starting up…",
+   "color": "#ffffffa0",
+   "font": 0,
+   "size": 18}
+]

@@ -36,28 +36,32 @@ int socket_init(splash_state_t *st) {
 			 * the name is stale, so reclaim it and bind again.
 			 */
 			int test_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-			if (test_fd >= 0) {
-				if (connect(test_fd, (struct sockaddr *)&addr,
-				            sizeof(addr)) == 0) {
-					close(test_fd);
-					fprintf(stderr,
-					        "Another splash-drm instance is running\n");
-					close(st->server_fd);
-					st->server_fd = -1;
-					return -1;
-				}
+			if (test_fd < 0) {
+				/* Cannot probe the existing name; give up rather
+				 * than silently binding over a live daemon. */
+				perror("socket (probe)");
+				close(st->server_fd);
+				st->server_fd = -1;
+				return -1;
+			}
+			if (connect(test_fd, (struct sockaddr *)&addr,
+			            sizeof(addr)) == 0) {
 				close(test_fd);
+				fprintf(stderr,
+				        "Another splash-drm instance is running\n");
+				close(st->server_fd);
+				st->server_fd = -1;
+				return -1;
+			}
+			close(test_fd);
 
-				int opt = 1;
-				setsockopt(st->server_fd, SOL_SOCKET, SO_REUSEADDR,
-				           &opt, sizeof(opt));
-				if (bind(st->server_fd, (struct sockaddr *)&addr,
-				         sizeof(addr)) < 0) {
-					perror("bind retry");
-					close(st->server_fd);
-					st->server_fd = -1;
-					return -1;
-				}
+			/* Name is stale (no one answered) - rebind. */
+			if (bind(st->server_fd, (struct sockaddr *)&addr,
+			         sizeof(addr)) < 0) {
+				perror("bind retry");
+				close(st->server_fd);
+				st->server_fd = -1;
+				return -1;
 			}
 		} else {
 			perror("bind");
