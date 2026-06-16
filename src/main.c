@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/types.h>
 
 /* ========================================================================
  * Signal Handling
@@ -41,7 +42,10 @@ static void install_signal_handlers(void) {
 	/* No SA_RESTART: a signal should interrupt poll() so the loop wakes. */
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGINT,  &sa, NULL);
-	sigaction(SIGHUP,  &sa, NULL);
+	/* Ignore SIGHUP: the shell sends it to background jobs when exiting
+	 * (e.g. during switch_root). The daemon is controlled via the socket,
+	 * so SIGHUP has no meaningful role here. */
+	signal(SIGHUP,  SIG_IGN);
 	signal(SIGPIPE, SIG_IGN);
 }
 
@@ -241,6 +245,9 @@ static void print_usage(const char *prog) {
 		"  --config <file|json>   Load configuration (fonts, defaults)\n"
 		"  --cmds <file|json>     Execute initial commands on startup\n"
 		"  --timeout <seconds>    Exit if idle for this long (watchdog)\n"
+		"  --fork                 Fork to background; parent exits immediately\n"
+		"                         (recommended for initramfs use — guarantees\n"
+		"                         a new session so switch_root cannot kill us)\n"
 		"  -q, --quiet            Suppress all output\n"
 		"  --debug                Enable debug output\n"
 		"  -v, --version          Print version and exit\n"
@@ -398,6 +405,49 @@ int process_startup_cmds(splash_state_t *st, const char *cmds_str) {
 }
 
 /* ========================================================================
+ * Daemonize
+ * ======================================================================== */
+
+/*
+ * Detach so the daemon can outlive the initramfs and the switch to the
+ * real rootfs. Called only after DRM, the socket and the first frame are
+ * up, so the splash is already on screen and any init error has already
+ * been reported in the foreground. The parent then exits, letting the
+ * init script reach switch_root without waiting (a trailing '&' becomes
+ * unnecessary). fork() hands every open fd to the child, and the shared
+ * open file descriptions keep DRM master and the listening socket alive;
+ * only the inherited stdio - still wired to /dev/console on the initramfs
+ * - is dropped.
+ */
+static int daemonize(void) {
+	pid_t pid = fork();
+	if (pid < 0)
+		return -1;			/* fork failed: caller stays in the foreground */
+	if (pid > 0)
+		_exit(0);			/* parent: return control to the init script */
+
+	setsid();				/* new session, no controlling terminal */
+
+	/* Don't pin the initramfs root as cwd; '/' is the real rootfs after
+	 * the switch and is harmless before it. */
+	if (chdir("/") != 0) {
+		/* non-fatal: no relative paths are used after startup */
+	}
+
+	/* Drop the boot console: stop holding /dev/console open and stop
+	 * writing onto a framebuffer the real init will want back. */
+	int nul = open("/dev/null", O_RDWR | O_CLOEXEC);
+	if (nul >= 0) {
+		dup2(nul, STDIN_FILENO);
+		dup2(nul, STDOUT_FILENO);
+		dup2(nul, STDERR_FILENO);
+		if (nul > STDERR_FILENO)
+			close(nul);
+	}
+	return 0;
+}
+
+/* ========================================================================
  * Entry Point
  * ======================================================================== */
 
@@ -410,6 +460,7 @@ int main(int argc, char **argv) {
 	const char *device     = argv[1];
 	const char *config_arg = NULL;
 	const char *cmds_arg   = NULL;
+	int         fork_daemon = 0;
 
 	splash_state_t st = {0};
 	st.bg_color   = 0;
@@ -446,6 +497,9 @@ int main(int argc, char **argv) {
 		}
 		else if (strcmp(argv[i], "--debug") == 0) {
 			st.debug = 1;
+		}
+		else if (strcmp(argv[i], "--fork") == 0) {
+			fork_daemon = 1;
 		}
 		else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
 			printf("splash-drm v%s\n", SPLASH_VERSION);
@@ -501,6 +555,11 @@ int main(int argc, char **argv) {
 
 	if (st.needs_render)
 		render_frame(&st);
+
+	if (fork_daemon && daemonize() < 0 && !st.quiet)
+		fprintf(stderr, "Warning: daemonize failed, staying in foreground\n");
+	else if (!fork_daemon)
+		setsid();
 
 	while (st.running && !g_terminate) {
 		struct pollfd fds[1 + MAX_SOCKET_CLIENTS + 1];
