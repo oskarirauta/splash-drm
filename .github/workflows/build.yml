@@ -12,9 +12,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
     - name: install libdrm
-      run: sudo apt -y install libdrm-dev
+      run: |
+        # Refresh the apt index first: the runner image ships a stale package
+        # cache, so installing straight away fails with 404s on the .deb.
+        sudo apt-get update
+        sudo apt-get install -y libdrm-dev
     - name: submodules
       run: git submodule update --init --recursive --remote
     - name: make
