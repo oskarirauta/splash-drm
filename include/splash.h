@@ -574,6 +574,9 @@ void kbd_process(splash_state_t *st);
 int load_config(splash_state_t *st, const char *config_str);
 int process_startup_cmds(splash_state_t *st, const char *cmds_str);
 
+/* usage.c - shared between splash-drm and splash-ctl */
+void print_cmd_help(const char *cmd);
+
 /* JSON helpers (defined in cmd.c, also used in main.c) */
 int         get_int(cJSON *obj, const char *key, int default_val);
 float       get_float(cJSON *obj, const char *key, float default_val);

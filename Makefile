@@ -37,10 +37,11 @@ SOURCES = $(SRCDIR)/main.c \
           $(SRCDIR)/cmd.c \
           $(SRCDIR)/utils.c \
           $(SRCDIR)/kbd.c \
-          $(SRCDIR)/qr.c
+          $(SRCDIR)/qr.c \
+          $(SRCDIR)/usage.c
 
 OBJECTS     = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES)) $(OBJDIR)/cJSON.o $(OBJDIR)/qrcodegen.o
-CTL_OBJECTS = $(OBJDIR)/splash-ctl.o
+CTL_OBJECTS = $(OBJDIR)/splash-ctl.o $(OBJDIR)/usage.o
 
 TARGET     = splash-drm
 CTL_TARGET = splash-ctl

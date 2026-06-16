@@ -140,34 +140,49 @@ static char *read_file(const char *path) {
 
 static void print_usage(const char *prog) {
 	fprintf(stderr,
-		"splash-ctl v3.0 - JSON control client for splash-drm\n\n"
+		"splash-ctl v%s - JSON control client for splash-drm\n\n"
 		"Usage: %s [options] <json-string>\n"
 		"       %s [options] --file <json-file>\n\n"
 		"Options:\n"
-		"  --raw      Output the raw JSON response\n"
-		"  --file     Read JSON from a file instead of the argument\n\n"
-		"  --help     Show this help and exit\n"
-		"  --version  Show version and exit\n"
-		"  --debug    Show debug output\n\n"
+		"  --raw         Output the raw JSON response\n"
+		"  --file        Read JSON from a file instead of the argument\n"
+		"  --debug       Show debug output\n"
+		"  --help        Show this help and exit\n"
+		"  --help <cmd>  Show full parameter list for a command\n"
+		"  --version     Show version and exit\n\n"
 		"JSON format (single command):\n"
-		"  {\"cmd\": \"text\", \"id\": 0, \"x\": 100, \"y\": 200, \"text\": \"Hello\"}\n\n"
+		"  {\"cmd\": \"text\", \"id\": 0, \"x\": -1, \"y\": -1, \"text\": \"Hello\"}\n\n"
 		"JSON format (batch):\n"
 		"  [{\"cmd\": \"clear\"}, {\"cmd\": \"image\", \"path\": \"splash.png\"}]\n\n"
 		"Available commands:\n"
-		"  Display:   clear, bg_color, image, text, remove_text, rect,\n"
-		"             remove_rect, overlay, remove_overlay, progress,\n"
-		"             update_progress, hide_progress\n"
-		"  Animation: animate, spinner\n"
-		"  Control:   suspend, resume, status, ready, exit\n\n"
+		"  Background:  clear     bg_color         image\n"
+		"  Text:        text      remove_text\n"
+		"  Rectangle:   rect      remove_rect\n"
+		"  Image:       overlay   remove_overlay\n"
+		"  Progress:    progress  update_progress  hide_progress\n"
+		"  Arc:         arc       update_arc       hide_arc\n"
+		"  Spinner:     spinner\n"
+		"  Console:     console   console_write    remove_console\n"
+		"  QR code:     qr        remove_qr\n"
+		"  Animation:   animate\n"
+		"  Query:       query     status\n"
+		"  Control:     suspend   resume           ready           exit\n\n"
+		"Run 'splash-ctl --help <cmd>' for full parameter details.\n\n"
 		"Examples:\n"
 		"  %s '{\"cmd\":\"image\",\"path\":\"boot.png\",\"crossfade\":600}'\n"
-		"  %s '{\"cmd\":\"spinner\",\"id\":0,\"radius\":40}'\n"
+		"  %s '{\"cmd\":\"text\",\"id\":0,\"text\":\"Booting...\",\"size\":32}'\n"
 		"  %s '{\"cmd\":\"progress\",\"id\":0,\"value\":0.5}'\n"
+		"  %s '{\"cmd\":\"arc\",\"id\":1,\"indeterminate\":true}'\n"
+		"  %s '{\"cmd\":\"console\",\"id\":2,\"w\":900,\"h\":200}'\n"
+		"  %s '{\"cmd\":\"console_write\",\"id\":2,\"text\":\"Starting services...\"}'\n"
+		"  %s '{\"cmd\":\"qr\",\"id\":3,\"text\":\"https://example.com\"}'\n"
 		"  %s '{\"cmd\":\"animate\",\"type\":\"text\",\"id\":0,\"to\":0,\"duration\":400}'\n"
 		"  %s --file /etc/splash-commands.json\n"
 		"  %s '{\"cmd\":\"status\"}'\n"
 		"  %s '{\"cmd\":\"exit\"}'\n",
-		prog, prog, prog, prog, prog, prog, prog, prog, prog);
+		SPLASH_VERSION,
+		prog, prog,
+		prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* ========================================================================
@@ -190,6 +205,10 @@ int main(int argc, char **argv) {
 			arg_offset++;
 		} else if (strcmp(argv[arg_offset], "--help") == 0 ||
 		           strcmp(argv[arg_offset], "-h") == 0) {
+			if (arg_offset + 1 < argc && argv[arg_offset + 1][0] != '-') {
+				print_cmd_help(argv[arg_offset + 1]);
+				return 0;
+			}
 			print_usage(argv[0]);
 			return 0;
 		} else if (strcmp(argv[arg_offset], "--version") == 0 ||
