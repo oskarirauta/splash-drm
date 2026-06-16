@@ -412,6 +412,14 @@ int main(int argc, char **argv) {
 				timeout = remain;
 		}
 
+		if (st.exit_at_ms > 0) {
+			uint64_t now = now_ms();
+			int remain = (now >= st.exit_at_ms)
+			             ? 0 : (int)(st.exit_at_ms - now);
+			if (timeout < 0 || remain < timeout)
+				timeout = remain;
+		}
+
 		int ret = poll(fds, nfds, timeout);
 
 		if (ret < 0) {
@@ -430,6 +438,13 @@ int main(int argc, char **argv) {
 		    now_ms() - st.last_activity_ms >= st.watchdog_ms) {
 			if (st.debug)
 				fprintf(stderr, "[debug] watchdog: idle timeout, exiting\n");
+			break;
+		}
+
+		/* Delayed exit: triggered by {"cmd":"exit","delay":<seconds>}. */
+		if (st.exit_at_ms > 0 && now_ms() >= st.exit_at_ms) {
+			if (st.debug)
+				fprintf(stderr, "[debug] exit delay elapsed, shutting down\n");
 			break;
 		}
 

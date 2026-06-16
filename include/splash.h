@@ -34,7 +34,7 @@
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "3.7.0"
+#define SPLASH_VERSION      "3.7.1"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8
@@ -476,6 +476,7 @@ typedef struct {
 
 	uint64_t last_activity_ms;   /* monotonic time of the last command */
 	uint32_t watchdog_ms;        /* idle timeout, 0 = disabled */
+	uint64_t exit_at_ms;         /* scheduled exit time, 0 = no exit pending */
 } splash_state_t;
 
 /* ========================================================================

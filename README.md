@@ -141,7 +141,7 @@ an existing `id` updates that element in place.
 | `suspend` / `resume` | Freeze or resume rendering. |
 | `status` | Query daemon state. Returns `state`, `ready`, `hidden`, `width`, `height`. |
 | `ready` | Mark the daemon as ready (for external polling). |
-| `exit` | Tell the daemon to shut down cleanly. |
+| `exit` | Tell the daemon to shut down cleanly. Optional `delay` (seconds) keeps it rendering before exiting. |
 
 ### Background
 
@@ -254,8 +254,9 @@ splash-ctl '{"cmd":"resume"}'
 # Query current value before updating (avoids going backwards).
 val=$(splash-ctl '{"cmd":"query","type":"arc","id":0}')
 
-# Tear down when done.
-splash-ctl '{"cmd":"exit"}'
+# Show a final message and exit after 3 seconds.
+splash-ctl '{"cmd":"text","id":99,"text":"System ready","size":48}'
+splash-ctl '{"cmd":"exit","delay":3}'
 ```
 
 See `examples/` for complete configuration examples and `contrib/` for

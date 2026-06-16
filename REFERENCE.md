@@ -463,7 +463,24 @@ unaffected. Takes no parameters.
 ### `exit`
 
 Requests a clean shutdown: the daemon restores the display to the state saved
-at startup, then exits. Takes no parameters.
+at startup, then exits.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `delay` | int | `0` | Seconds to wait before exiting. `0` exits immediately. |
+
+Without `delay` the daemon exits as soon as it has sent the reply. With
+`delay` it continues rendering and accepting commands for that many seconds,
+then shuts down automatically. This allows displaying a final message or
+running a fade-out animation before the process ends.
+
+```json
+{"cmd": "text", "id": 99, "text": "System ready", "size": 48}
+{"cmd": "exit", "delay": 3}
+```
+
+The client receives an `ok` reply immediately in both cases; the delay only
+affects when the daemon process actually terminates.
 
 ---
 

@@ -188,9 +188,15 @@ static int get_easing(cJSON *obj, const char *key, int default_val) {
  * ======================================================================== */
 
 static int cmd_exit(splash_state_t *st, cJSON *args, int client_idx) {
-	(void)args;
+	int delay_s = get_int(args, "delay", 0);
 	send_response(st, client_idx, create_response("ok", NULL));
-	st->running = 0;
+	if (delay_s > 0) {
+		st->exit_at_ms = now_ms() + (uint64_t)delay_s * 1000u;
+		if (st->debug)
+			fprintf(stderr, "[debug] exit scheduled in %d s\n", delay_s);
+	} else {
+		st->running = 0;
+	}
 	return 0;
 }
 

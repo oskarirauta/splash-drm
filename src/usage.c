@@ -184,6 +184,17 @@ void print_cmd_help(const char *cmd) {
 		"  hidden      bool    true if ESC-toggled to blank\n"
 		"  width       int     display width in pixels\n"
 		"  height      int     display height in pixels\n");
+	} else if (strcmp(cmd, "exit") == 0) {
+		fprintf(stderr,
+		"exit — request a clean shutdown of the daemon\n\n"
+		"  delay       int     seconds to wait before exiting (default: 0)\n\n"
+		"Without 'delay' the daemon exits immediately after sending the reply.\n"
+		"With 'delay' the daemon keeps rendering for that many seconds, then\n"
+		"shuts down. Animations and commands continue to work during the delay,\n"
+		"so you can display a final message or fade out before the process ends.\n\n"
+		"Example: show 'System ready' and exit after 3 seconds\n"
+		"  splash-ctl '{\"cmd\":\"text\",\"id\":99,\"text\":\"System ready\"}'\n"
+		"  splash-ctl '{\"cmd\":\"exit\",\"delay\":3}'\n");
 	} else {
 		fprintf(stderr, "No detailed help available for '%s'.\n"
 		                "Run with -h for the command list.\n", cmd);
