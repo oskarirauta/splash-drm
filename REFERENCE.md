@@ -489,6 +489,49 @@ transparent, `ff` = fully opaque.
 
 ---
 
+## Appendix: Daemon startup options
+
+```
+splash-drm <drm_device> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--config <file\|json>` | Load font configuration at startup (see [Font slots](#appendix-font-slots)). Accepts a file path or an inline JSON string. |
+| `--cmds <file\|json>` | Execute a batch of commands immediately after startup, before the event loop begins. Accepts a file path or an inline JSON string. |
+| `--fork` | Fork to the background before entering the event loop. The parent process exits immediately, returning control to the caller. **Recommended for initramfs use** — the child calls `setsid()` after forking, creating a new session with no controlling terminal, so `switch_root` and shell exit cannot deliver `SIGHUP` to the daemon. Without `--fork`, a best-effort `setsid()` is attempted, but it silently fails when the shell's job-control places the process in its own process group. |
+| `--timeout <seconds>` | Watchdog: exit automatically if no command arrives within this many seconds. Useful as a safety net so a stuck boot script cannot leave the splash on screen indefinitely. |
+| `-q`, `--quiet` | Suppress all stdout/stderr output. |
+| `--debug` | Enable verbose debug logging to stderr. |
+| `-v`, `--version` | Print version and exit. |
+| `-h`, `--help` | Print usage summary and exit. |
+| `--help <cmd>` | Print full parameter list for a command (e.g. `--help arc`). |
+
+### Recommended initramfs invocation
+
+```sh
+splash-drm /dev/dri/card0 --fork --config /etc/splash/config.json \
+    --cmds '[{"cmd":"image","path":"/etc/splash/bg.png"},{"cmd":"spinner","id":0}]'
+
+# … mount real root, etc. …
+
+splash-ctl '{"cmd":"suspend"}'
+exec switch_root /sysroot /sbin/init
+```
+
+In the new root's init scripts:
+
+```sh
+splash-ctl '{"cmd":"resume"}'
+# … update progress as services start …
+splash-ctl '{"cmd":"exit"}'
+```
+
+`--fork` makes the `&` shell operator unnecessary and guarantees the daemon
+survives `switch_root` regardless of the shell's job-control configuration.
+
+---
+
 ## Appendix: Font slots
 
 Fonts are loaded once at startup via `--config` and referenced by slot index

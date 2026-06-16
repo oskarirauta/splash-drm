@@ -45,8 +45,9 @@ Two programs are built:
 - **JSON control protocol** over an abstract UNIX socket (`\0splash-drm`).
 - **`query` command** — scripts can read back current element state (value,
   position, text, …) before deciding whether to send an update.
-- **Clean shutdown** on `SIGTERM`/`SIGINT`/`SIGHUP`, plus an optional
-  inactivity watchdog.
+- **Clean shutdown** on `SIGTERM`/`SIGINT`, plus an optional inactivity
+  watchdog. `SIGHUP` is intentionally ignored so the daemon survives shell
+  exit during `switch_root`.
 - **Vendored dependencies** — cJSON, stb, and qrcodegen are git submodules;
   nothing external is needed at runtime.
 
@@ -83,6 +84,7 @@ splash-drm <drm_device> [options]
 |--------|-------------|
 | `--config <file\|json>` | Load configuration (font slots). Inline JSON or a file path. |
 | `--cmds <file\|json>` | Run an initial batch of commands on startup. |
+| `--fork` | Fork to background; parent exits immediately. **Recommended for initramfs use** — the child calls `setsid()` after forking, so `switch_root` cannot deliver `SIGHUP` to the daemon. Without this flag, no `&` is needed but session detachment is best-effort only. |
 | `--timeout <seconds>` | Exit if no command arrives for this long (watchdog). |
 | `-q`, `--quiet` | Suppress all output. |
 | `--debug` | Enable debug output. |
@@ -229,14 +231,25 @@ The abstract socket survives the switch-root, so `splash-ctl` on the real rootfs
 can keep driving the same daemon instance.
 
 ```sh
-# Start the daemon.
-splash-drm /dev/dri/card0 \
+# Start the daemon (--fork detaches cleanly; no & needed).
+splash-drm /dev/dri/card0 --fork \
     --config /etc/splash/config.json \
     --cmds   /etc/splash/boot.json \
-    --timeout 120 &
+    --timeout 120
 
 # Drive progress from boot scripts.
 splash-ctl '{"cmd":"update_arc","id":0,"value":0.5}'
+
+# Suspend before switch_root so the daemon is idle during the transition.
+splash-ctl '{"cmd":"suspend"}'
+exec switch_root /sysroot /sbin/init
+```
+
+In the new root's init scripts:
+
+```sh
+# Resume the daemon that survived switch_root.
+splash-ctl '{"cmd":"resume"}'
 
 # Query current value before updating (avoids going backwards).
 val=$(splash-ctl '{"cmd":"query","type":"arc","id":0}')
@@ -274,6 +287,7 @@ splash-drm/
 │   ├── utils.c               # Colour parsing, path resolution, themes
 │   ├── kbd.c                 # evdev keyboard input (ESC toggle)
 │   ├── qr.c                  # QR code rendering
+│   ├── usage.c               # Shared command help text (splash-drm + splash-ctl)
 │   └── splash-ctl.c          # JSON control client
 ├── cJSON/                    # Submodule: lightweight JSON parser
 ├── stb/                      # Submodule: stb_image.h, stb_truetype.h
