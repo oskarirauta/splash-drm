@@ -31,7 +31,7 @@ jobs:
       # in an Alpine container and fail if it ended up with any shared-lib deps.
       run: |
         docker run --rm -v "$PWD":/src -w /src alpine:latest sh -c '
-          apk add --no-cache build-base >/dev/null &&
+          apk add --no-cache build-base linux-headers >/dev/null &&
           make clean &&
           make static &&
           if ldd splash-drm 2>&1 | grep -q "=>"; then

@@ -58,7 +58,9 @@ Two programs are built:
 ### Requirements
 
 - A C compiler (GCC or Clang).
-- Linux kernel headers and libdrm headers — needed only to compile.
+- Linux kernel UAPI headers (`linux-headers` on Alpine, `linux-libc-dev` on
+  Debian/Ubuntu) — needed only to compile. The libdrm headers are vendored
+  under `drm/`, so no `libdrm-dev` is required.
 
 ### Get the submodules
 

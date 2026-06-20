@@ -5,6 +5,11 @@ These are libdrm's UAPI / userspace headers, vendored so splash-drm builds with
 -Idrm/libdrm` and never adds a system include path, so the self-contained,
 runtime-libdrm-free build is the one that actually gets tested.
 
+They still `#include <linux/types.h>` and `<asm/ioctl.h>` — DRM is a kernel
+interface — so building needs the Linux kernel UAPI headers present
+(`linux-headers` on Alpine, `linux-libc-dev` on Debian). That is a kernel
+requirement, not a libdrm one: any DRM program needs it, vendored headers or not.
+
 They are unmodified copies from libdrm and keep their original **MIT / X11**
 licences — see the notice at the top of each header. That is compatible with
 splash-drm's own MIT licence.
