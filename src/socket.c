@@ -18,7 +18,7 @@ int socket_init(splash_state_t *st) {
 
 	st->server_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
 	if (st->server_fd < 0) {
-		perror("socket");
+		LOGE("socket: %s", strerror(errno));
 		return -1;
 	}
 
@@ -29,50 +29,21 @@ int socket_init(splash_state_t *st) {
 	strncpy(addr.sun_path + 1, SOCKET_NAME + 1, sizeof(addr.sun_path) - 2);
 
 	if (bind(st->server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		if (errno == EADDRINUSE) {
-			/*
-			 * The name is taken. Probe it: if something answers,
-			 * another daemon is live and we bail out; otherwise
-			 * the name is stale, so reclaim it and bind again.
-			 */
-			int test_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-			if (test_fd < 0) {
-				/* Cannot probe the existing name; give up rather
-				 * than silently binding over a live daemon. */
-				perror("socket (probe)");
-				close(st->server_fd);
-				st->server_fd = -1;
-				return -1;
-			}
-			if (connect(test_fd, (struct sockaddr *)&addr,
-			            sizeof(addr)) == 0) {
-				close(test_fd);
-				fprintf(stderr,
-				        "Another splash-drm instance is running\n");
-				close(st->server_fd);
-				st->server_fd = -1;
-				return -1;
-			}
-			close(test_fd);
-
-			/* Name is stale (no one answered) - rebind. */
-			if (bind(st->server_fd, (struct sockaddr *)&addr,
-			         sizeof(addr)) < 0) {
-				perror("bind retry");
-				close(st->server_fd);
-				st->server_fd = -1;
-				return -1;
-			}
-		} else {
-			perror("bind");
-			close(st->server_fd);
-			st->server_fd = -1;
-			return -1;
-		}
+		/* An abstract-namespace name has no filesystem entry and is reaped by
+		 * the kernel the instant the last holder's fd closes, so it can never
+		 * be left "stale" by a crashed daemon. EADDRINUSE therefore means a
+		 * live instance already holds it - bail rather than fight over it. */
+		if (errno == EADDRINUSE)
+			LOGE("another splash-drm instance is already running");
+		else
+			LOGE("bind: %s", strerror(errno));
+		close(st->server_fd);
+		st->server_fd = -1;
+		return -1;
 	}
 
 	if (listen(st->server_fd, MAX_SOCKET_CLIENTS) < 0) {
-		perror("listen");
+		LOGE("listen: %s", strerror(errno));
 		close(st->server_fd);
 		st->server_fd = -1;
 		return -1;
@@ -83,6 +54,7 @@ int socket_init(splash_state_t *st) {
 		st->client_cmd_len[i] = 0;
 	}
 
+	LOGD("control socket listening (abstract namespace)");
 	return 0;
 }
 
@@ -139,17 +111,13 @@ static int accept_client(splash_state_t *st) {
 		if (st->client_fds[i] < 0) {
 			st->client_fds[i]     = fd;
 			st->client_cmd_len[i] = 0;
-			if (st->debug)
-				fprintf(stderr,
-				        "[debug] Client connected, slot %d (fd=%d)\n",
-				        i, fd);
+			LOGD("client connected, slot %d (fd=%d)", i, fd);
 			return i;
 		}
 	}
 
 	/* No free slot: drop the connection. */
-	if (st->debug)
-		fprintf(stderr, "[debug] Client rejected: no slots\n");
+	LOGD("client rejected: no slots");
 	close(fd);
 	return -1;
 }
@@ -159,10 +127,7 @@ static void close_client(splash_state_t *st, int idx) {
 		return;
 
 	if (st->client_fds[idx] >= 0) {
-		if (st->debug)
-			fprintf(stderr,
-			        "[debug] Client disconnected, slot %d (fd=%d)\n",
-			        idx, st->client_fds[idx]);
+		LOGD("client disconnected, slot %d (fd=%d)", idx, st->client_fds[idx]);
 		close(st->client_fds[idx]);
 		st->client_fds[idx]     = -1;
 		st->client_cmd_len[idx] = 0;
@@ -205,13 +170,21 @@ void socket_reply_json(splash_state_t *st, int client_idx, cJSON *response) {
 	buf[len + 1] = '\0';
 
 	ssize_t written = write(st->client_fds[client_idx], buf, len + 1);
-	(void)written;
 
 	free(buf);
 	free(str);
 
-	if (st->debug)
-		fprintf(stderr, "[debug] Reply to client %d sent\n", client_idx);
+	if (written != (ssize_t)(len + 1)) {
+		/* Partial or failed reply on the non-blocking fd: the client would
+		 * block forever waiting for the missing newline, so drop it to fail
+		 * fast rather than leave a half-line dangling. */
+		LOGD("reply to client %d incomplete (%zd/%zu), closing",
+		     client_idx, written, len + 1);
+		close_client(st, client_idx);
+		return;
+	}
+
+	LOGD("reply to client %d sent", client_idx);
 }
 
 /* ========================================================================
@@ -259,9 +232,10 @@ void socket_process(splash_state_t *st, struct pollfd *fds, int nfds) {
 			if (buf[j] == '\n') {
 				st->client_cmd_buf[idx][st->client_cmd_len[idx]] = '\0';
 
-				if (st->debug)
-					fprintf(stderr, "[debug] JSON from client %d: %s",
-					        idx, st->client_cmd_buf[idx]);
+				/* len includes the trailing '\n'; drop it from the log. */
+				LOGD("JSON from client %d: %.*s", idx,
+				     (int)st->client_cmd_len[idx] - 1,
+				     st->client_cmd_buf[idx]);
 
 				handle_json_command(st, st->client_cmd_buf[idx], idx);
 				st->client_cmd_len[idx] = 0;

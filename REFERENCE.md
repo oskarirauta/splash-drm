@@ -15,6 +15,38 @@ by the caller. Sending a command with an existing id reconfigures that element
 in place; sending one with a new id creates it. There is no auto-increment —
 the caller is responsible for tracking ids.
 
+### Creating vs. updating elements (merge updates)
+
+This applies to every element command that takes an `id`: `text`, `rect`,
+`overlay`, `progress`, `arc`, `spinner`, `console`, and `qr`.
+
+| Case | Behaviour |
+|------|-----------|
+| **new `id`** | The element is created. Any omitted field takes its default. |
+| **existing `id` (merge)** | Only the fields you supply are changed; every omitted field keeps its **current** value. |
+| **existing `id` + `"replace": true`** | The element is reset to its defaults first, then the supplied fields are applied — so every field you do not supply returns to its default. |
+| **existing `id` + `"remove": true`** | The element is deleted in place, exactly like the matching `remove_*` command. |
+
+For example, after creating
+
+```json
+{"cmd":"text","id":0,"x":100,"y":50,"color":"red","size":32,"text":"hello"}
+```
+
+sending `{"cmd":"text","id":0,"text":"world"}` redraws "world" at the same
+position, colour, and size — only the text changes. Sending
+`{"cmd":"text","id":0,"text":"world","replace":true}` instead resets the label
+to its defaults (screen centre, white, default font) before applying the new
+text.
+
+A merge update does **not** cancel a running opacity animation unless you supply
+`opacity` explicitly. This lets you change a field such as a progress `value`
+in the middle of a fade without interrupting the animation.
+
+The dedicated `update_progress`, `update_arc`, `hide_progress`, `hide_arc`, and
+`remove_*` commands still work and are kept as explicit aliases for callers that
+prefer them.
+
 ### Coordinates and sizes (`x`, `y`, `w`, `h`)
 
 | Value | Meaning |
@@ -66,7 +98,8 @@ Available on `text`, `rect`, and `progress`.
 
 ### Animation (`animate` command)
 
-Any element's opacity can be animated after creation. See the
+An element's opacity, position (`x`/`y`), size (`w`/`h`), or colour can be
+animated after creation, selected by the `property` field. See the
 [`animate`](#animate) section.
 
 ---
@@ -131,7 +164,10 @@ Set or replace the background image.
 ### `text` / `remove_text`
 
 Add, update, or remove a text label. Supports UTF-8, kerning, and
-sub-pixel positioning.
+sub-pixel positioning. On an existing `id` the supplied fields are **merged**
+into the current element (see [merge updates](#creating-vs-updating-elements-merge-updates));
+`"replace": true` resets to defaults first and `"remove": true` deletes the
+element (equivalent to `remove_text`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -151,6 +187,8 @@ sub-pixel positioning.
 | `shadow_dy` | int | `2` | Shadow y offset in pixels. |
 | `shadow_blur` | int | `4` | Shadow blur radius. `0` = hard shadow. |
 | `shadow_color` | color | `#000000a0` | Shadow colour. |
+| `outline` | int | `0` | Stroke width in pixels drawn around the glyphs. `0` = no outline. Drawn under the text for legibility over busy or low-contrast backgrounds. |
+| `outline_color` | color | `black` | Outline (stroke) colour. |
 | `opacity` | float | `1.0` | Master alpha. |
 
 ---
@@ -158,7 +196,11 @@ sub-pixel positioning.
 ### `rect` / `remove_rect`
 
 Add, update, or remove a rectangle. Can be filled, outlined, or both.
-Supports rounded corners, gradient fills, and drop shadows.
+Supports rounded corners, gradient fills, and drop shadows. On an existing `id`
+the supplied fields are **merged** into the current element (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the element (equivalent to
+`remove_rect`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -175,7 +217,7 @@ Supports rounded corners, gradient fills, and drop shadows.
 | `border_color` | color | `white` | Border (outline) colour. |
 | `border_width` | int | `0` | Border thickness in pixels. `0` = no border. |
 | `grad_color` | color | — | Second gradient stop. Only used when `grad_dir` is non-zero. |
-| `grad_dir` | int | `0` | Gradient direction: `0`=solid, `1`=vertical (top→bottom), `2`=horizontal (left→right), `3`=diagonal (top-left→bottom-right). |
+| `grad_dir` | int | `0` | Gradient direction: `0`=solid, `1`=vertical (top→bottom), `2`=horizontal (left→right), `3`=diagonal (top-left→bottom-right). `gradient` is accepted as a legacy alias. |
 | `shadow` | bool | `false` | Drop shadow behind the rectangle. |
 | `shadow_dx` | int | `4` | Shadow x offset. |
 | `shadow_dy` | int | `6` | Shadow y offset. |
@@ -185,14 +227,168 @@ Supports rounded corners, gradient fills, and drop shadows.
 
 ---
 
-### `overlay` / `remove_overlay`
+### `ellipse` / `circle` / `remove_ellipse` / `remove_circle`
 
-Add, update, or remove a bitmap image drawn on top of the background.
+Add, update, or remove an ellipse or circle. `circle` is an alias for `ellipse`
+and produces the same element. Can be filled or drawn as an outline ring. The
+centre is at `(x, y)`. On an existing `id` the supplied fields are **merged**
+into the current element (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the element (equivalent to
+`remove_ellipse` / `remove_circle`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `id` | int | — | Element id (required). |
-| `path` | string | — | Image file path (PNG / JPEG). |
+| `x` | coord | `-1` | Centre x. Negative = screen centre on that axis. |
+| `y` | coord | `-1` | Centre y. Negative = screen centre on that axis. |
+| `radius` | int | `0` | Circle radius in pixels. Shorthand for setting `rx` (and `ry` mirrors it). |
+| `rx` | int | `0` | Horizontal radius in pixels. |
+| `ry` | int | `0` | Vertical radius in pixels. `0` mirrors `rx`, producing a circle. |
+| `thickness` | int | `0` | `0` = filled (default); `>0` draws an outline ring of this width in pixels. |
+| `color` | color | `white` | Fill colour (filled) or ring colour (outline). |
+| `opacity` | float | `1.0` | Master alpha. |
+
+`query` (type `ellipse` or `circle`) returns `x`, `y`, `rx`, `ry`, `thickness`,
+and `opacity`. Opacity can be animated with the [`animate`](#animate) command.
+
+---
+
+### `line` / `remove_line`
+
+Add, update, or remove a straight line, typically used as a divider. The line
+runs from `(x1, y1)` to `(x2, y2)`. On an existing `id` the supplied fields are
+**merged** into the current element (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the element (equivalent to
+`remove_line`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | int | — | Element id (required). |
+| `x1` | coord | `-1` | Start point x. Negative = screen centre on that axis. |
+| `y1` | coord | `-1` | Start point y. Negative = screen centre on that axis. |
+| `x2` | coord | `-1` | End point x. Negative = screen centre on that axis. |
+| `y2` | coord | `-1` | End point y. Negative = screen centre on that axis. |
+| `thickness` | int | `2` | Line width in pixels. |
+| `cap` | int | `0` | End cap style: `0` = flat/butt ends (default), `1` = round. |
+| `color` | color | `white` | Line colour. |
+| `opacity` | float | `1.0` | Master alpha. |
+
+`query` (type `line`) returns `x1`, `y1`, `x2`, `y2`, `thickness`, and
+`opacity`. Opacity can be animated with the [`animate`](#animate) command.
+
+---
+
+### `stepper` / `remove_stepper`
+
+A step / boot-stage indicator: a centred row of dots or pills where the first
+`current` of `count` steps are drawn as "done". Advance `current` as boot
+progresses — typically with a merge update such as
+`{"cmd":"stepper","id":0,"current":3}`. On an existing `id` the supplied fields
+are **merged** into the current element (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the element (equivalent to
+`remove_stepper`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | int | — | Element id (required). |
+| `x` | coord | `-1` | Row anchor x. Negative = screen centre on that axis. |
+| `y` | coord | `-1` | Row anchor y. Negative = screen centre on that axis. |
+| `align` | 0–2 | `1` | Horizontal positioning anchor of the row. |
+| `valign` | 0–2 | `1` | Vertical positioning anchor of the row. |
+| `count` | int | `3` | Number of steps. |
+| `current` | int | `0` | Steps marked done, `0..count`. |
+| `style` | int | `0` | Step shape: `0` = dots (default), `1` = bars (pills). |
+| `size` | int | `12` | Dot radius (style 0) or bar height (style 1) in pixels. |
+| `length` | int | `0` | Bar length for style 1, in pixels. `0` = `size * 3`. |
+| `gap` | int | — | Spacing between steps in pixels. |
+| `thickness` | int | `0` | Todo (remaining) steps: `0` = filled (default), `>0` = outline width in pixels. |
+| `color_done` | color | `white` | Colour of completed steps. |
+| `color_todo` | color | dim grey | Colour of remaining steps. |
+| `opacity` | float | `1.0` | Master alpha. |
+
+`query` (type `stepper`) returns `x`, `y`, `count`, `current`, and `opacity`.
+Opacity can be animated with the [`animate`](#animate) command.
+
+---
+
+### `marquee` / `remove_marquee`
+
+A single line of text that scrolls horizontally inside a clip box. The text
+repeats with `gap` spacing for a seamless loop and is clipped to the box, so
+content wider than the box scrolls smoothly across it. Like `text` and
+`console`, it requires a font slot to be loaded (via `--config` or a config
+file). On an existing `id` the supplied fields are **merged** into the current
+element (see [merge updates](#creating-vs-updating-elements-merge-updates));
+`"replace": true` resets to defaults first and `"remove": true` deletes the
+element (equivalent to `remove_marquee`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | int | — | Element id (required). |
+| `x` | coord | `-1` | Clip box x position. Negative = screen centre on that axis. |
+| `y` | coord | `-1` | Clip box y position. Negative = screen centre on that axis. |
+| `w` | coord | `400` | Clip box width in pixels. |
+| `h` | coord | `40` | Clip box height in pixels. |
+| `text` | string | — | The text to scroll. |
+| `font` | int | `0` | Font slot index. |
+| `size` | float | slot default | Font size in pixels. `0` = use the font slot's loaded size. |
+| `color` | color | `white` | Text colour. |
+| `speed` | int | `60` | Scroll speed in px/sec: `>0` scrolls left, `<0` scrolls right, `0` = static. |
+| `gap` | int | `60` | Gap between repetitions in pixels, for the seamless loop. |
+| `opacity` | float | `1.0` | Master alpha. |
+
+`query` (type `marquee`) returns `text`, `x`, `y`, `w`, `h`, `speed`, and
+`opacity`. Opacity can be animated with the [`animate`](#animate) command.
+
+---
+
+### `sprite` / `remove_sprite`
+
+A frame animation: cycles through a list of loaded images (frames) at a fixed
+frame rate — for example an animated logo or a custom spinner. The frames are
+loaded once when the element is created. On an existing `id` the supplied fields
+are **merged** into the current element (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the element (equivalent to
+`remove_sprite`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | int | — | Element id (required). |
+| `frames` | array | — | List of image file paths, one per frame (PNG / JPEG, up to 32). |
+| `x` | coord | `-1` | Anchor x position. Negative = screen centre on that axis. |
+| `y` | coord | `-1` | Anchor y position. Negative = screen centre on that axis. |
+| `w` | coord | `0` | Draw width. `0` = native frame size; if only one of `w`/`h` is given, the other is derived from the frame aspect ratio. |
+| `h` | coord | `0` | Draw height. `0` = native frame size; derived from `w` and aspect ratio when only `w` is given. |
+| `align` | 0–2 | `1` | Horizontal positioning anchor. |
+| `valign` | 0–2 | `1` | Vertical positioning anchor. |
+| `filter` | int | `3` (lanczos) | Scaling filter: `0`=nearest, `1`=bilinear, `2`=bicubic, `3`=lanczos. |
+| `fps` | int | `12` | Frames per second. |
+| `loop` | bool | `true` | Repeat the animation. `false` = play once, then hold the last frame. |
+| `opacity` | float | `1.0` | Master alpha. |
+
+On a merge update, `frames` reloads **only** when supplied — omitting it keeps
+the running animation. `query` (type `sprite`) returns `x`, `y`, the frame
+`count`, the current frame, `fps`, and `opacity`. Opacity can be animated with
+the [`animate`](#animate) command.
+
+---
+
+### `overlay` / `remove_overlay`
+
+Add, update, or remove a bitmap image drawn on top of the background. On an
+existing `id` the supplied fields are **merged** into the current element (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the element (equivalent to
+`remove_overlay`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `id` | int | — | Element id (required). |
+| `path` | string | — | Image file path (PNG / JPEG). Required for a new overlay; optional on a merge update (see below). |
 | `x` | coord | `-1` | Anchor x position. |
 | `y` | coord | `-1` | Anchor y position. |
 | `w` | coord | `0` | Display width. `0` derives from `h` and the image's aspect ratio, or uses native width if `h` is also 0. |
@@ -200,14 +396,26 @@ Add, update, or remove a bitmap image drawn on top of the background.
 | `align` | 0–2 | `1` | Horizontal anchor. |
 | `valign` | 0–2 | `1` | Vertical anchor. |
 | `filter` | int or string | `3` (lanczos) | Resampling filter (same values as `image`). |
+| `radius` | int | `0` | Rounded-corner clip radius in pixels. `0` = sharp corners (no clip). |
+| `angle` | float | `0` | Rotation around the image's centre, in degrees. `0` = no rotation. |
+| `tint` | color | — | Multiply tint applied to the image; the tint's alpha is the strength (omit, or alpha `0`, = no tint). A white tint is a no-op; a coloured tint multiplies the image toward that colour. |
 | `opacity` | float | `1.0` | Master alpha. |
+
+On a merge update of an existing overlay, `path` may be **omitted** to keep the
+current image and change only other fields (e.g. just the `angle`). A fresh
+overlay still requires `path`. The `radius`, `angle`, and `tint` effects use
+bilinear sampling.
 
 ---
 
-### `progress` / `update_progress` / `hide_progress`
+### `progress` / `update_progress` / `hide_progress` / `remove_progress`
 
 Horizontal progress bar. Supports built-in colour themes, custom colours,
 gradient fill, percentage label, and indeterminate (sweeping highlight) mode.
+On an existing `id` the supplied fields are **merged** into the current bar (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the bar (equivalent to
+`remove_progress`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -223,14 +431,14 @@ gradient fill, percentage label, and indeterminate (sweeping highlight) mode.
 | `bg_color` | color | theme | Background track colour. |
 | `bar_color` | color | theme | Fill colour (or first gradient stop). |
 | `bar_color2` | color | — | Second gradient stop. Only used when `bar_gradient` is non-zero. |
-| `bar_gradient` | int | `0` | Gradient direction along the fill: same values as `grad_dir` on `rect`. |
+| `bar_gradient` | int | `0` | Gradient direction along the fill: same values as `grad_dir` on `rect`. `gradient` is accepted as a legacy alias. |
 | `border_color` | color | theme | Border colour. |
 | `text_color` | color | theme | Percentage label colour. |
 | `borderless` | bool | `false` | Suppress the border entirely. |
 | `border_width` | int | `2` | Border thickness in pixels. |
 | `radius` | int | `0` | Corner radius in pixels. |
-| `font_slot` | int | `0` | Font slot for the percentage label. |
-| `font_size` | float | `0` | Font size for the percentage label. `0` = auto (roughly half the bar height). |
+| `font_slot` | int | `0` | Font slot for the percentage label. `font` is accepted as an alias. |
+| `font_size` | float | `0` | Font size for the percentage label. `0` = auto (roughly half the bar height). `size` is accepted as an alias. |
 | `show_percent` | bool | `false` | Render the percentage value as text inside the bar. |
 | `indeterminate` | bool | `false` | Sweeping highlight mode: the fill animates back and forth regardless of `value`. Useful for "busy" states where actual progress is unknown. |
 | `indet_period_ms` | int | `1100` | Duration of one full sweep cycle in indeterminate mode. |
@@ -264,9 +472,13 @@ to the pool.
 
 ---
 
-### `arc` / `update_arc` / `hide_arc`
+### `arc` / `update_arc` / `hide_arc` / `remove_arc`
 
-Circular or arc-shaped progress indicator. The centre is at `(x, y)`.
+Circular or arc-shaped progress indicator. The centre is at `(x, y)`. On an
+existing `id` the supplied fields are **merged** into the current arc (see
+[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
+resets to defaults first and `"remove": true` deletes the arc (equivalent to
+`remove_arc`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -301,9 +513,13 @@ the pool.
 
 ---
 
-### `spinner`
+### `spinner` / `remove_spinner`
 
 Apple-style rotating spinner made of fading spokes. The centre is at `(x, y)`.
+On an existing `id` the supplied fields are **merged** into the current spinner
+(see [merge updates](#creating-vs-updating-elements-merge-updates));
+`"replace": true` resets to defaults first and `"remove": true` deletes the
+spinner (equivalent to `remove_spinner`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -314,9 +530,24 @@ Apple-style rotating spinner made of fading spokes. The centre is at `(x, y)`.
 | `spokes` | int | `12` | Number of spokes. The oldest spoke is the most transparent. |
 | `color` | color | `white` | Spoke colour. The opacity of each spoke fades towards the oldest. |
 | `period` | int | `900` | Duration of one full rotation in milliseconds. |
-| `action` | string | `"show"` | `"show"` makes the spinner visible and starts it; `"hide"` stops and hides it. |
-| `hidden` | bool | `false` | Alternative to `action`: configure the spinner without making it visible yet. |
+| `action` | string | `"show"` | Visibility action — see table below. |
+| `duration` | int | `300` | Fade duration in milliseconds for `"show_animated"` / `"hide_animated"`. Ignored by the instant `"show"` / `"hide"` actions. |
+| `easing` | string or int | `"ease_in_out"` | Easing curve for the animated actions (same values as the [`animate`](#animate) command). |
+| `hidden` | bool | `false` | Alternative to `action`: configure the spinner without making it visible yet, ready to be revealed later with `"show_animated"`. |
 | `opacity` | float | `1.0` | Master alpha. |
+
+**`action`**
+
+| Value | Behaviour |
+|-------|-----------|
+| `"show"` | Make the spinner visible and start it immediately. |
+| `"hide"` | Stop and hide it immediately. The slot (configuration) is preserved. |
+| `"show_animated"` | Reveal the spinner with an opacity fade-in over `duration` ms using `easing`. |
+| `"hide_animated"` | Fade the spinner out over `duration` ms using `easing`, then stop rendering. |
+
+**`remove_spinner`** accepts `id` only. Deactivates the spinner in place, like
+the other `remove_*` commands. (Use `action: "hide"` instead if you want to keep
+the slot configuration for a later reveal.)
 
 ---
 
@@ -327,6 +558,11 @@ buffer; when the buffer is full the oldest line is discarded. Lines are
 anchored to the bottom of the area — as the count grows from zero, new lines
 appear at the bottom and earlier lines stack upward.
 
+On an existing `id` the supplied `console` fields are **merged** into the current
+console (see [merge updates](#creating-vs-updating-elements-merge-updates));
+`"replace": true` resets to defaults first and `"remove": true` deletes the
+console (equivalent to `remove_console`).
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `id` | int | — | Element id (required). |
@@ -335,7 +571,7 @@ appear at the bottom and earlier lines stack upward.
 | `w` | coord | `400` | Width in pixels. |
 | `h` | coord | `200` | Height in pixels. |
 | `font_slot` | int | `0` | Font slot. |
-| `size` | float | `14` | Font size in pixels. |
+| `size` | float | `0` | Font size in pixels. `0` = use the font slot's loaded size. |
 | `color` | color | `white` | Text colour. |
 | `bg_color` | color | `transparent` | Background fill. Alpha `0` = fully transparent (no background). |
 | `padding` | int | `4` | Inner margin between the area's edges and the text, in pixels. |
@@ -348,6 +584,7 @@ appear at the bottom and earlier lines stack upward.
 |-----------|------|-------------|
 | `id` | int | Console element to write to (required). |
 | `text` | string | Text to append. A `\n` in the string splits the content into multiple separate lines, each occupying one ring buffer slot. |
+| `color` | color | Colour for the line(s) being written. Omit to use the console's own default colour. Each line keeps the colour it was written with, so a single console can mix colours — handy for severity-coloured boot logs (green ok / yellow warn / red fail). |
 
 ---
 
@@ -355,7 +592,10 @@ appear at the bottom and earlier lines stack upward.
 
 Encodes a text payload as a QR Code and renders it as a grid of filled
 rectangles. The QR Code version (size) is chosen automatically to fit the
-content.
+content. On an existing `id` the supplied fields are **merged** into the current
+element (see [merge updates](#creating-vs-updating-elements-merge-updates));
+`"replace": true` resets to defaults first and `"remove": true` deletes the
+element (equivalent to `remove_qr`).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -376,19 +616,45 @@ content.
 
 ### `animate`
 
-Animate any element's opacity over time. The animation runs in the background;
-the daemon continues to process commands while it plays.
+Animate an element property over time. The animation runs in the background;
+the daemon continues to process commands while it plays. The `property` field
+selects what is animated — opacity (the default), position, size, or colour.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `type` | string | — | Element type to animate: `"text"`, `"rect"`, `"overlay"`, `"progress"`, `"arc"`, `"spinner"`, `"console"`, `"qr"` (required). |
 | `id` | int | — | Element id (required). |
-| `from` | float | current opacity | Start opacity. If omitted, the element's current opacity is used. |
-| `to` | float | — | End opacity (required). |
+| `property` | string | `"opacity"` | What to animate — see the property table below. |
+| `from` | float / int / color | current value | Start value. If omitted, the element's current value for the chosen property is used. Type depends on `property` (see below). |
+| `to` | float / int / color | — | End value (required). Type depends on `property`. |
 | `duration` | int | — | Animation duration in milliseconds (required). |
 | `easing` | string or int | `"ease_out"` | Easing curve — see table below. |
 | `repeat` | bool | `false` | Loop the animation in ping-pong fashion (`from`→`to`→`from`→…). |
 | `remove_on_end` | bool | `false` | Deactivate (remove) the element when the animation reaches its end. Useful for fade-out transitions. |
+
+**Properties (`property`)**
+
+| Value | `from`/`to` type | Effect |
+|-------|------------------|--------|
+| `"opacity"` | float `0.0`–`1.0` | Master alpha (the default; behaves as before). |
+| `"x"` | int (pixels) | Move the element horizontally. |
+| `"y"` | int (pixels) | Move the element vertically. |
+| `"w"` | int (pixels) | Resize / grow the element's width. |
+| `"h"` | int (pixels) | Resize / grow the element's height. |
+| `"color"` | color | Colour transition, interpolated per channel (RGBA lerp). |
+
+For `x`/`y`/`w`/`h` the `from`/`to` values are pixel integers; for `color` they
+are colours (named or hex); for `opacity` they are `0.0`–`1.0` floats as before.
+When `from` is omitted it defaults to the element's current value for that
+property. `duration`, `easing`, `repeat`, and `remove_on_end` work identically
+for every property.
+
+Each element type can animate only the properties it actually has. Most
+elements support `opacity`, `x`, and `y`. `w`/`h` additionally work on `rect`,
+`marquee`, `console`, `sprite`, `progress`, `overlay`, and `ellipse`. `color`
+additionally works on `text`, `rect`, `ellipse`, `line`, `marquee`, `console`,
+`spinner`, and `qr`. Requesting a property an element does not support returns
+an error.
 
 **Easing curves**
 
@@ -518,9 +784,14 @@ splash-drm <drm_device> [options]
 | `--cmds <file\|json>` | Execute a batch of commands immediately after startup, before the event loop begins. Accepts a file path or an inline JSON string. |
 | `--fork` | Fork to the background before entering the event loop. The parent process exits immediately, returning control to the caller. **Recommended for initramfs use** — the child calls `setsid()` after forking, creating a new session with no controlling terminal, so `switch_root` and shell exit cannot deliver `SIGHUP` to the daemon. Without `--fork`, a best-effort `setsid()` is attempted, but it silently fails when the shell's job-control places the process in its own process group. |
 | `--timeout <seconds>` | Watchdog: exit automatically if no command arrives within this many seconds. Useful as a safety net so a stuck boot script cannot leave the splash on screen indefinitely. |
-| `-q`, `--quiet` | Suppress all stdout/stderr output. |
-| `--debug` | Enable verbose debug logging to stderr. |
-| `-v`, `--version` | Print version and exit. |
+| `--headless` | Initialise DRM but never program the CRTC, so the console stays visible; renders off-screen only. See [below](#headless-and-config-check-modes). |
+| `--check` | Validate `--config`/`--cmds` without opening DRM, then exit (`0` = ok). See [below](#headless-and-config-check-modes). |
+| `--dump <file.png>` | Render one frame from `--config`/`--cmds` to a PNG file, then exit — no daemon loop and no control socket. Uses the connected display's resolution. Pair with `--headless` to render without touching the live console. See [below](#headless-and-config-check-modes). |
+| `-q`, `--quiet` | Silence all output (even errors). |
+| `-v`, `-vv`, `-vvv` | Increase log verbosity (info / debug / trace). See [Logging](#logging). |
+| `--debug` | Alias for `-vv` (debug verbosity). |
+| `--log <target>` | Log sink: `auto` (default), `stderr`, `syslog`, or `kmsg`. See [Logging](#logging). |
+| `-V`, `--version` | Print version and exit. |
 | `-h`, `--help` | Print usage summary and exit. |
 | `--help <cmd>` | Print full parameter list for a command (e.g. `--help arc`). |
 
@@ -546,6 +817,42 @@ splash-ctl '{"cmd":"exit"}'
 
 `--fork` makes the `&` shell operator unnecessary and guarantees the daemon
 survives `switch_root` regardless of the shell's job-control configuration.
+
+### Logging
+
+The daemon has five log levels, ordered `ERROR < WARN < INFO < DEBUG < TRACE`.
+The default level is `ERROR`: a normal run is silent except for genuine
+failures. Verbosity flags raise the level — `-v` enables `INFO`, `-vv` enables
+`DEBUG`, and `-vvv` enables `TRACE`; `--debug` is an alias for `-vv`. `-q` /
+`--quiet` silences everything, including errors.
+
+`--log` selects the sink. A foreground run logs to `stderr`. A `--fork`ed
+daemon has its stdio redirected to `/dev/null`, so it falls back to the syslog
+socket `/dev/log` and then the kernel log `/dev/kmsg`. The default `auto`
+follows that order; `stderr`, `syslog`, and `kmsg` force a specific sink
+regardless of forking. Syslog messages are tagged `splash-drm[pid]` at the
+`daemon` facility.
+
+### Headless and config-check modes
+
+`--headless` initialises DRM and reads the connected display's mode — it needs
+a connected display to size its buffers — but never programs the CRTC. The
+kernel console and live log output therefore stay visible. This is useful
+during the initramfs→rootfs boot: you can watch boot messages and live logs
+without the splash covering them. Rendering still runs off-screen, so the
+render path is exercised even though nothing reaches the panel.
+
+`--check` validates a boot configuration (`--config`/`--cmds` JSON: structure,
+known commands, and their parameters) on a build host without opening DRM or
+touching the referenced asset files. It exits non-zero on structural problems,
+making it a quick way to catch a typo before deploying to an initramfs.
+
+`--dump <file.png>` renders a single frame from `--config`/`--cmds` to a PNG file
+and then exits. It sizes the image to the connected display's resolution but runs
+neither the daemon loop nor the control socket, so it never collides with a
+running daemon's abstract name. Combined with `--headless` it renders entirely
+off-screen, leaving the live console untouched — handy for previewing a boot
+configuration on a build host or capturing golden frames for regression testing.
 
 ---
 

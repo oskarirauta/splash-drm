@@ -39,26 +39,47 @@ int font_load(const char *path, float pixel_height, int slot) {
 	if (pixel_height < 8.0f || pixel_height > MAX_FONT_SIZE)
 		return -1;
 
+	if (g_validate_only)
+		return 0;		/* --check: validate params, skip the file */
+
 	font_unload(slot);
 
 	char resolved[PATH_MAX];
 	if (resolve_font_path(path, resolved, sizeof(resolved)) == 0)
 		path = resolved;
 
-	FILE *fp = fopen(path, "rb");
-	if (!fp)
+	/* open() with O_NONBLOCK (fopen lacks it) so a font path that happens to be
+	 * a FIFO/device cannot block the daemon; require a regular file before any
+	 * blocking read. */
+	int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0) {
+		LOGW("font: cannot open %s: %s", path, strerror(errno));
 		return -1;
+	}
+	struct stat stbuf;
+	if (fstat(fd, &stbuf) < 0 || !S_ISREG(stbuf.st_mode)) {
+		LOGW("font: %s is not a regular file", path);
+		close(fd);
+		return -1;
+	}
+	FILE *fp = fdopen(fd, "rb");
+	if (!fp) {
+		close(fd);
+		return -1;
+	}
 
 	fseek(fp, 0, SEEK_END);
 	long size = ftell(fp);
 	fseek(fp, 0, SEEK_SET);
-	if (size <= 0) {
+	if (size <= 0 || size > (32 * 1024 * 1024)) {
+		LOGW("font: %s has unusable size (%ld bytes)", path, size);
 		fclose(fp);
 		return -1;
 	}
 
 	uint8_t *data = malloc((size_t)size);
 	if (!data || fread(data, 1, (size_t)size, fp) != (size_t)size) {
+		LOGW("font: could not read %s", path);
 		free(data);
 		fclose(fp);
 		return -1;
@@ -474,6 +495,35 @@ static void wrap_text(stbtt_fontinfo *info, float scale,
  * Text Rendering
  * ======================================================================== */
 
+/* Morphological dilation of an 8-bit coverage mask by a circular structuring
+ * element of the given radius - used to grow glyphs into an outline/stroke. */
+static void dilate_coverage(const uint8_t *src, uint8_t *dst,
+                            int w, int h, int radius) {
+	int r2 = radius * radius;
+	for (int y = 0; y < h; y++) {
+		for (int x = 0; x < w; x++) {
+			uint8_t m = 0;
+			for (int dy = -radius; dy <= radius && m < 255; dy++) {
+				int yy = y + dy;
+				if (yy < 0 || yy >= h)
+					continue;
+				const uint8_t *row = src + (size_t)yy * w;
+				for (int dx = -radius; dx <= radius; dx++) {
+					int xx = x + dx;
+					if (dx * dx + dy * dy > r2 || xx < 0 || xx >= w)
+						continue;
+					if (row[xx] > m) {
+						m = row[xx];
+						if (m == 255)
+							break;
+					}
+				}
+			}
+			dst[(size_t)y * w + x] = m;
+		}
+	}
+}
+
 void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 	font_t *f = get_font(te->font_slot);
 	if (!f || !te->text[0])
@@ -548,8 +598,8 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 	/* Resolve the anchor point: a negative te->x / te->y centres on that
 	 * axis. valign then positions the whole block, align each line within
 	 * it, relative to that anchor. */
-	int anchor_x = (te->x < 0) ? (int)buf->width  / 2 : te->x;
-	int anchor_y = (te->y < 0) ? (int)buf->height / 2 : te->y;
+	int anchor_x = resolve_anchor(te->x, (int)buf->width);
+	int anchor_y = resolve_anchor(te->y, (int)buf->height);
 
 	int block_x;					/* fb x of the buffer's left */
 	if      (te->align == ALIGN_CENTER) block_x = anchor_x - maxw / 2;
@@ -567,6 +617,8 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 	 * overhang and for the blur to spread into. */
 	int pad = te->shadow
 	          ? ((te->shadow_blur > 0 ? te->shadow_blur : 0) + 3) : 3;
+	if (te->outline > 0 && te->outline + 1 > pad)
+		pad = te->outline + 1;			/* room for the dilated stroke */
 	int cov_w = maxw + 2 * pad;
 	int cov_h = block_h + 2 * pad;
 	int origin_x = block_x - pad;			/* fb position of cov[0,0] */
@@ -604,6 +656,19 @@ void draw_text_element(drm_buffer_t *buf, text_element_t *te) {
 			                   0, 0,
 			                   (int)buf->width, (int)buf->height);
 			free(sh);
+		}
+	}
+
+	/* Outline: a dilated copy of the coverage in the outline colour, drawn
+	 * under the text so only the grown ring around the glyphs shows. */
+	if (te->outline > 0) {
+		uint8_t *ol = malloc((size_t)cov_w * cov_h);
+		if (ol) {
+			dilate_coverage(cov, ol, cov_w, cov_h, te->outline);
+			composite_coverage(buf, ol, cov_w, cov_h, origin_x, origin_y,
+			                   apply_opacity(te->outline_color, op),
+			                   0, 0, (int)buf->width, (int)buf->height);
+			free(ol);
 		}
 	}
 
@@ -692,13 +757,16 @@ void draw_console_element(drm_buffer_t *buf, console_t *con) {
 	int max_lines  = con->max_lines;
 	int oldest_idx = (con->head - vis + max_lines * 2) % max_lines;
 
-	uint32_t color = apply_opacity(con->color, op);
-
 	for (int i = 0; i < vis; i++) {
 		int         idx  = (oldest_idx + i) % max_lines;
 		const char *text = con->lines[idx];
 		if (!text[0])
 			continue;
+
+		/* Per-line colour override (0 = use the console default). */
+		uint32_t lc    = con->line_color[idx] ? con->line_color[idx]
+		                                      : con->color;
+		uint32_t color = apply_opacity(lc, op);
 
 		int line_y = top_y + i * line_adv;   /* top pixel of the line */
 
@@ -730,4 +798,97 @@ void draw_console_element(drm_buffer_t *buf, console_t *con) {
 
 	con->x = saved_x;
 	con->y = saved_y;
+}
+
+/* ========================================================================
+ * Marquee / Scrolling Text Rendering
+ * ======================================================================== */
+
+/*
+ * Render a marquee_t: one line of text scrolling horizontally inside a clip
+ * box. The text is rasterised once into a coverage buffer, then composited at
+ * one or more positions (it repeats with `gap` spacing for a seamless loop),
+ * all clipped to the box. m->offset (advanced by anim_tick) is the scroll
+ * position; a negative box x/y centres on that axis.
+ */
+void draw_marquee(drm_buffer_t *buf, marquee_t *m) {
+	if (!m->active || m->w <= 0 || m->h <= 0 || !m->text[0])
+		return;
+	float op = m->opacity;
+	if (op <= 0.0f)
+		return;
+
+	font_t *f = get_font(m->font_slot);
+	if (!f)
+		return;
+
+	init_srgb_lut();
+
+	const int pad = 3;
+
+	/* (Re)rasterise the text into the coverage cache only when a glyph-
+	 * determining field changed (cov_dirty) or the cache is empty. The scroll
+	 * advances `offset` every frame but never alters the bitmap, so the cached
+	 * coverage is tiled across the box each frame without re-rasterising. */
+	if (m->cov_dirty || !m->cov_cache) {
+		stbtt_fontinfo *info  = f->info;
+		float           scale = f->scale;
+		if (m->font_size > 0.0f)
+			scale = stbtt_ScaleForPixelHeight(info, m->font_size);
+
+		int ascent, descent, line_gap;
+		stbtt_GetFontVMetrics(info, &ascent, &descent, &line_gap);
+		int asc_px = (int)(ascent * scale);
+		int th     = asc_px - (int)(descent * scale);
+		if (th <= 0)
+			return;
+
+		int   len  = (int)strlen(m->text);
+		float tw_f = measure_line_scaled(info, scale, m->text, len);
+		int   tw   = (int)(tw_f + 0.5f);
+		if (tw <= 0)
+			return;
+
+		int cov_w = tw + 2 * pad;
+		int cov_h = th + 2 * pad;
+		uint8_t *cov = calloc((size_t)cov_w * cov_h, 1);
+		if (!cov)
+			return;
+		rasterize_line(info, scale, cov, cov_w, cov_h,
+		               (float)pad, pad + asc_px, m->text, len);
+
+		free(m->cov_cache);
+		m->cov_cache   = cov;
+		m->cov_cache_w = cov_w;
+		m->cov_cache_h = cov_h;
+		m->cov_dirty   = 0;
+	}
+
+	uint8_t *cov   = m->cov_cache;
+	int      cov_w = m->cov_cache_w;
+	int      cov_h = m->cov_cache_h;
+	int      tw    = cov_w - 2 * pad;	/* recovered: cov_w == tw + 2*pad */
+	int      th    = cov_h - 2 * pad;
+
+	int bx = (m->x < 0) ? ((int)buf->width  - m->w) / 2 : m->x;
+	int by = (m->y < 0) ? ((int)buf->height - m->h) / 2 : m->y;
+
+	int gap    = m->gap > 0 ? m->gap : 60;
+	int period = tw + gap;
+
+	int origin_y = by + (m->h - th) / 2 - pad;   /* vertically centred in box */
+
+	/* Normalise the scroll offset into one period, then tile across the box. */
+	float off = (m->speed != 0) ? fmodf(m->offset, (float)period) : 0.0f;
+	if (off < 0.0f)
+		off += (float)period;
+
+	int clip_x1 = bx + m->w;
+	int clip_y1 = by + m->h;
+	uint32_t col = apply_opacity(m->color, op);
+	for (float x = (float)bx - off; x < (float)clip_x1; x += (float)period) {
+		composite_coverage(buf, cov, cov_w, cov_h,
+		                   (int)(x + 0.5f) - pad, origin_y, col,
+		                   bx, by, clip_x1, clip_y1);
+	}
 }

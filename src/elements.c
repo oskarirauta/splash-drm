@@ -102,6 +102,176 @@ rect_element_t *rect_alloc(splash_state_t *st) {
 }
 
 /* ========================================================================
+ * Ellipses / Circles
+ * ======================================================================== */
+
+ellipse_t *ellipse_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_ELLIPSES; i++) {
+		if (st->ellipses[i].active && st->ellipses[i].id == id)
+			return &st->ellipses[i];
+	}
+	return NULL;
+}
+
+ellipse_t *ellipse_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_ELLIPSES; i++) {
+		if (!st->ellipses[i].active) {
+			memset(&st->ellipses[i], 0, sizeof(ellipse_t));
+			st->ellipses[i].active  = 1;
+			st->ellipses[i].opacity = 1.0f;
+			return &st->ellipses[i];
+		}
+	}
+	return NULL;
+}
+
+/* ========================================================================
+ * Lines
+ * ======================================================================== */
+
+line_t *line_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_LINES; i++) {
+		if (st->lines[i].active && st->lines[i].id == id)
+			return &st->lines[i];
+	}
+	return NULL;
+}
+
+line_t *line_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_LINES; i++) {
+		if (!st->lines[i].active) {
+			memset(&st->lines[i], 0, sizeof(line_t));
+			st->lines[i].active  = 1;
+			st->lines[i].opacity = 1.0f;
+			return &st->lines[i];
+		}
+	}
+	return NULL;
+}
+
+/* ========================================================================
+ * Steppers
+ * ======================================================================== */
+
+stepper_t *stepper_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_STEPPERS; i++) {
+		if (st->steppers[i].active && st->steppers[i].id == id)
+			return &st->steppers[i];
+	}
+	return NULL;
+}
+
+stepper_t *stepper_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_STEPPERS; i++) {
+		if (!st->steppers[i].active) {
+			memset(&st->steppers[i], 0, sizeof(stepper_t));
+			st->steppers[i].active  = 1;
+			st->steppers[i].opacity = 1.0f;
+			return &st->steppers[i];
+		}
+	}
+	return NULL;
+}
+
+/* ========================================================================
+ * Marquees
+ * ======================================================================== */
+
+marquee_t *marquee_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_MARQUEES; i++) {
+		if (st->marquees[i].active && st->marquees[i].id == id)
+			return &st->marquees[i];
+	}
+	return NULL;
+}
+
+marquee_t *marquee_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_MARQUEES; i++) {
+		if (!st->marquees[i].active) {
+			marquee_free_cache(&st->marquees[i]);	/* free before memset drops the ptr */
+			memset(&st->marquees[i], 0, sizeof(marquee_t));
+			st->marquees[i].active  = 1;
+			st->marquees[i].opacity = 1.0f;
+			return &st->marquees[i];
+		}
+	}
+	return NULL;
+}
+
+void marquee_free_cache(marquee_t *m) {
+	if (!m)
+		return;
+	free(m->cov_cache);
+	m->cov_cache   = NULL;
+	m->cov_cache_w = 0;
+	m->cov_cache_h = 0;
+	m->cov_dirty   = 1;
+}
+
+/* ========================================================================
+ * Sprites (frame animations)
+ * ======================================================================== */
+
+void sprite_clear_frames(sprite_t *sp) {
+	if (!sp)
+		return;
+	for (int i = 0; i < sp->frame_count; i++)
+		free_image(&sp->frames[i]);
+	sp->frame_count = 0;
+	sp->current     = 0;
+}
+
+sprite_t *sprite_find(splash_state_t *st, int id) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_SPRITES; i++) {
+		if (st->sprites[i].active && st->sprites[i].id == id)
+			return &st->sprites[i];
+	}
+	return NULL;
+}
+
+sprite_t *sprite_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_SPRITES; i++) {
+		if (!st->sprites[i].active) {
+			memset(&st->sprites[i], 0, sizeof(sprite_t));
+			st->sprites[i].active  = 1;
+			st->sprites[i].opacity = 1.0f;
+			return &st->sprites[i];
+		}
+	}
+	return NULL;
+}
+
+/* ========================================================================
  * Spinners
  *
  * Unlike the other elements a spinner has two flags: `used` marks the
@@ -149,6 +319,21 @@ progress_bar_t *progress_find(splash_state_t *st, int id) {
 	for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
 		if (st->bars[i].active && st->bars[i].id == id)
 			return &st->bars[i];
+	}
+	return NULL;
+}
+
+progress_bar_t *progress_alloc(splash_state_t *st) {
+	if (!st)
+		return NULL;
+
+	for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
+		if (!st->bars[i].active) {
+			memset(&st->bars[i], 0, sizeof(progress_bar_t));
+			st->bars[i].active  = 1;
+			st->bars[i].opacity = 1.0f;
+			return &st->bars[i];
+		}
 	}
 	return NULL;
 }
@@ -269,6 +454,25 @@ void clear_all_elements(splash_state_t *st) {
 	for (int i = 0; i < MAX_RECTANGLES; i++)
 		st->rects[i].active = 0;
 
+	for (int i = 0; i < MAX_ELLIPSES; i++)
+		st->ellipses[i].active = 0;
+
+	for (int i = 0; i < MAX_LINES; i++)
+		st->lines[i].active = 0;
+
+	for (int i = 0; i < MAX_STEPPERS; i++)
+		st->steppers[i].active = 0;
+
+	for (int i = 0; i < MAX_MARQUEES; i++) {
+		marquee_free_cache(&st->marquees[i]);
+		st->marquees[i].active = 0;
+	}
+
+	for (int i = 0; i < MAX_SPRITES; i++) {
+		sprite_clear_frames(&st->sprites[i]);
+		st->sprites[i].active = 0;
+	}
+
 	for (int i = 0; i < MAX_PROGRESS_BARS; i++)
 		st->bars[i].active = 0;
 
@@ -290,7 +494,8 @@ void clear_all_elements(splash_state_t *st) {
 	st->bg_loaded = 0;
 	free_image(&st->bg_image);
 	free_image(&st->bg_prev);
-	st->bg_prev_loaded = 0;
+	free_image(&st->bg_cache);
+	st->bg_cache_dirty = 1;
 	st->bg_anim.active = 0;
 	st->bg_opacity     = 1.0f;
 }

@@ -45,6 +45,15 @@ void draw_qr_element(drm_buffer_t *buf, qr_element_t *qr) {
 			mod_px = 1;
 	}
 
+	/* Clamp to the larger screen dimension: a module bigger than the display
+	 * is meaningless, and it keeps total*mod_px well within int range (a
+	 * client-supplied module_px of INT_MAX would otherwise overflow). */
+	int max_px = (int)((buf->width > buf->height) ? buf->width : buf->height);
+	if (max_px < 1)
+		max_px = 1;
+	if (mod_px > max_px)
+		mod_px = max_px;
+
 	int px_total = total * mod_px;   /* rendered size in pixels */
 
 	/* Anchor position. Negative value = screen centre on that axis. */

@@ -26,7 +26,12 @@ void print_cmd_help(const char *cmd) {
 		"  shadow_dx/dy int     shadow offset in pixels (default: 2)\n"
 		"  shadow_blur int      shadow blur radius (default: 4)\n"
 		"  shadow_color color   shadow color (default: #00000080)\n"
-		"  opacity     float    master alpha 0.0-1.0\n");
+		"  outline     int      stroke width in px around glyphs (0 = none)\n"
+		"  outline_color color  stroke color (default: black)\n"
+		"  opacity     float    master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the element (like remove_text).\n");
 	} else if (strcmp(cmd, "rect") == 0) {
 		fprintf(stderr,
 		"rect — add or update a rectangle\n\n"
@@ -45,7 +50,86 @@ void print_cmd_help(const char *cmd) {
 		"  shadow_dx/dy int     shadow offset\n"
 		"  shadow_blur  int     shadow blur radius\n"
 		"  shadow_color color   shadow color\n"
-		"  opacity      float   master alpha 0.0-1.0\n");
+		"  opacity      float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the element (like remove_rect).\n");
+	} else if (strcmp(cmd, "ellipse") == 0 || strcmp(cmd, "circle") == 0) {
+		fprintf(stderr,
+		"ellipse (alias: circle) — add or update an ellipse / circle\n\n"
+		"  id           int     element id (required)\n"
+		"  x, y         coord   centre position (default: screen centre)\n"
+		"  radius       int     circle radius in pixels (shorthand for rx)\n"
+		"  rx, ry       int     ellipse radii in pixels (ry 0 = mirror rx)\n"
+		"  thickness    int     0 = filled, >0 = outline ring width in pixels\n"
+		"  color        color   fill / outline color\n"
+		"  opacity      float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the element (like remove_ellipse).\n");
+	} else if (strcmp(cmd, "line") == 0) {
+		fprintf(stderr,
+		"line — add or update a straight line / divider\n\n"
+		"  id           int     element id (required)\n"
+		"  x1, y1       coord   start point\n"
+		"  x2, y2       coord   end point\n"
+		"  thickness    int     line width in pixels (default 2)\n"
+		"  cap          int     0 = flat ends (default), 1 = round\n"
+		"  color        color   line color\n"
+		"  opacity      float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the element (like remove_line).\n");
+	} else if (strcmp(cmd, "stepper") == 0) {
+		fprintf(stderr,
+		"stepper — add or update a step / boot-stage indicator\n\n"
+		"  id           int     element id (required)\n"
+		"  x, y         coord   row anchor (default: screen centre)\n"
+		"  align/valign 0-2     positioning anchor of the row\n"
+		"  count        int     number of steps (default 3)\n"
+		"  current      int     steps marked done, 0..count (default 0)\n"
+		"  style        int     0 = dots (default), 1 = bars (pills)\n"
+		"  size         int     dot radius / bar height in px (default 12)\n"
+		"  length       int     bar length for style 1 (0 = size*3)\n"
+		"  gap          int     spacing between steps in px\n"
+		"  thickness    int     todo steps: 0 = filled, >0 = outline width\n"
+		"  color_done   color   colour of completed steps\n"
+		"  color_todo   color   colour of remaining steps\n"
+		"  opacity      float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the element (like remove_stepper).\n");
+	} else if (strcmp(cmd, "marquee") == 0) {
+		fprintf(stderr,
+		"marquee — add or update horizontally-scrolling text\n\n"
+		"  id           int     element id (required)\n"
+		"  x, y         coord   clip box position (default: screen centre)\n"
+		"  w, h         coord   clip box size (default 400 x 40)\n"
+		"  text         string  the text to scroll\n"
+		"  font         int     font slot (default 0)\n"
+		"  size         float   font size in px (0 = slot default)\n"
+		"  color        color   text color\n"
+		"  speed        int     scroll px/sec: >0 left, <0 right, 0 static (def 60)\n"
+		"  gap          int     gap between repetitions in px (default 60)\n"
+		"  opacity      float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the element (like remove_marquee).\n");
+	} else if (strcmp(cmd, "sprite") == 0) {
+		fprintf(stderr,
+		"sprite — add or update a frame animation (cycled images)\n\n"
+		"  id           int     element id (required)\n"
+		"  frames       array   list of image paths, one per frame\n"
+		"  x, y         coord   anchor position (default: screen centre)\n"
+		"  w, h         coord   draw size (0 = native frame size)\n"
+		"  align/valign 0-2     positioning anchor\n"
+		"  filter       int     0=nearest 1=bilinear 2=bicubic 3=lanczos\n"
+		"  fps          int     frames per second (default 12)\n"
+		"  loop         bool    repeat (default true); false = play once, hold\n"
+		"  opacity      float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged; \"frames\" reloads only\n"
+		"when given (otherwise the running animation is kept). \"replace\":true\n"
+		"resets to defaults; \"remove\":true deletes (like remove_sprite).\n");
 	} else if (strcmp(cmd, "overlay") == 0) {
 		fprintf(stderr,
 		"overlay — add or update an image overlay\n\n"
@@ -55,7 +139,14 @@ void print_cmd_help(const char *cmd) {
 		"  w, h         coord   display size (0 = auto from aspect ratio)\n"
 		"  align/valign 0-2     positioning anchor\n"
 		"  filter       int     0=nearest 1=bilinear 2=bicubic 3=lanczos\n"
-		"  opacity      float   master alpha 0.0-1.0\n");
+		"  radius       int     rounded-corner clip radius in px (0 = none)\n"
+		"  angle        float   rotation around the centre, degrees (0 = none)\n"
+		"  tint         color   multiply tint; alpha = strength (omit = none)\n"
+		"  opacity      float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value, and the image is kept unless a new path is given).\n"
+		"\"replace\":true resets to defaults first; \"remove\":true deletes the\n"
+		"element (like remove_overlay).\n");
 	} else if (strcmp(cmd, "progress") == 0) {
 		fprintf(stderr,
 		"progress — create or reconfigure a horizontal progress bar\n\n"
@@ -81,7 +172,12 @@ void print_cmd_help(const char *cmd) {
 		"  indeterminate   bool   sweeping highlight mode\n"
 		"  indet_period_ms int    sweep cycle time in ms\n"
 		"  shadow          bool   drop shadow on the whole bar\n"
-		"  opacity         float  master alpha 0.0-1.0\n");
+		"  opacity         float  master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the bar.\n"
+		"Related: update_progress (value), hide_progress (keep config),\n"
+		"remove_progress (free the slot).\n");
 	} else if (strcmp(cmd, "arc") == 0) {
 		fprintf(stderr,
 		"arc — create or reconfigure a circular/arc progress bar\n\n"
@@ -104,7 +200,12 @@ void print_cmd_help(const char *cmd) {
 		"  show_percent    bool   show percentage in the centre\n"
 		"  indeterminate   bool   spinning highlight mode\n"
 		"  indet_period_ms int    rotation cycle time in ms (default: 1200)\n"
-		"  opacity         float  master alpha 0.0-1.0\n");
+		"  opacity         float  master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the arc.\n"
+		"Related: update_arc (value), hide_arc (keep config),\n"
+		"remove_arc (free the slot).\n");
 	} else if (strcmp(cmd, "spinner") == 0) {
 		fprintf(stderr,
 		"spinner — create/show/hide an Apple-style rotating spinner\n\n"
@@ -114,8 +215,18 @@ void print_cmd_help(const char *cmd) {
 		"  spokes      int     number of spokes (default: 12)\n"
 		"  color       color   spoke color (default: white)\n"
 		"  period      int     full rotation time in ms (default: 900)\n"
-		"  action      string  \"show\" or \"hide\" (default: show)\n"
-		"  opacity     float   master alpha 0.0-1.0\n");
+		"  action      string  show, hide, show_animated, hide_animated\n"
+		"                      (default: show)\n"
+		"  duration    int     fade time in ms for the *_animated actions\n"
+		"                      (default: 300)\n"
+		"  easing      string  easing for the *_animated actions\n"
+		"                      (linear, ease_in, ease_out, ease_in_out)\n"
+		"  opacity     float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the spinner.\n"
+		"Related: remove_spinner — deactivate the spinner in place (use\n"
+		"action:\"hide\" instead to keep the slot configuration).\n");
 	} else if (strcmp(cmd, "console") == 0) {
 		fprintf(stderr,
 		"console — create or reconfigure a scrolling log area\n\n"
@@ -129,9 +240,13 @@ void print_cmd_help(const char *cmd) {
 		"  padding     int     inner margin in pixels\n"
 		"  max_lines   int     ring buffer capacity (max: 64)\n"
 		"  opacity     float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied console fields are merged (others keep\n"
+		"their current value). \"replace\":true resets to defaults first;\n"
+		"\"remove\":true deletes the console (like remove_console).\n\n"
 		"console_write — push text into a console element\n\n"
 		"  id          int     console id (required)\n"
-		"  text        string  text to append; \\n splits into multiple lines\n");
+		"  text        string  text to append; \\n splits into multiple lines\n"
+		"  color       color   optional per-line colour (default: console colour)\n");
 	} else if (strcmp(cmd, "qr") == 0) {
 		fprintf(stderr,
 		"qr — create or update a QR code element\n\n"
@@ -145,7 +260,10 @@ void print_cmd_help(const char *cmd) {
 		"  ecc         int     error correction: 0=low 1=medium 2=quartile 3=high\n"
 		"  color       color   dark module color (default: black)\n"
 		"  bg_color    color   light background; alpha 0 = transparent\n"
-		"  opacity     float   master alpha 0.0-1.0\n");
+		"  opacity     float   master alpha 0.0-1.0\n\n"
+		"On an existing id, supplied fields are merged (others keep their\n"
+		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
+		"deletes the element (like remove_qr).\n");
 	} else if (strcmp(cmd, "image") == 0) {
 		fprintf(stderr,
 		"image — set the background image\n\n"

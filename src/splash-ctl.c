@@ -149,7 +149,7 @@ static void print_usage(const char *prog) {
 		"  --debug       Show debug output\n"
 		"  --help        Show this help and exit\n"
 		"  --help <cmd>  Show full parameter list for a command\n"
-		"  --version     Show version and exit\n\n"
+		"  -V, --version Show version and exit\n\n"
 		"JSON format (single command):\n"
 		"  {\"cmd\": \"text\", \"id\": 0, \"x\": -1, \"y\": -1, \"text\": \"Hello\"}\n\n"
 		"JSON format (batch):\n"
@@ -158,6 +158,11 @@ static void print_usage(const char *prog) {
 		"  Background:  clear     bg_color         image\n"
 		"  Text:        text      remove_text\n"
 		"  Rectangle:   rect      remove_rect\n"
+		"  Ellipse:     ellipse   circle           remove_ellipse  remove_circle\n"
+		"  Line:        line      remove_line\n"
+		"  Stepper:     stepper   remove_stepper\n"
+		"  Marquee:     marquee   remove_marquee\n"
+		"  Sprite:      sprite    remove_sprite\n"
 		"  Image:       overlay   remove_overlay\n"
 		"  Progress:    progress  update_progress  hide_progress\n"
 		"  Arc:         arc       update_arc       hide_arc\n"
@@ -212,7 +217,8 @@ int main(int argc, char **argv) {
 			print_usage(argv[0]);
 			return 0;
 		} else if (strcmp(argv[arg_offset], "--version") == 0 ||
-			   strcmp(argv[arg_offset], "-v") == 0) {
+			   strcmp(argv[arg_offset], "-V") == 0 ||
+			   strcmp(argv[arg_offset], "-v") == 0) {	/* -v kept as a deprecated alias */
 			printf("splash-ctl v%s\n", SPLASH_VERSION);
 			return 0;
 		} else {

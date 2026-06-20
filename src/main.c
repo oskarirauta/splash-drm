@@ -27,9 +27,15 @@
  * the screen showing a stale splash buffer.
  */
 static volatile sig_atomic_t g_terminate = 0;
+static volatile sig_atomic_t g_term_sig  = 0;
+
+const char *exit_reason = "exit command (running=0)";	/* default: cmd_exit */
+
+/* See log.h note in splash.h: --check sets this so asset loads are skipped. */
+int g_validate_only = 0;
 
 static void on_signal(int sig) {
-	(void)sig;
+	g_term_sig  = sig;
 	g_terminate = 1;
 }
 
@@ -66,9 +72,19 @@ static void print_usage(const char *prog) {
 		"  --fork                 Fork to background; parent exits immediately\n"
 		"                         (recommended for initramfs use — guarantees\n"
 		"                         a new session so switch_root cannot kill us)\n"
-		"  -q, --quiet            Suppress all output\n"
-		"  --debug                Enable debug output\n"
-		"  -v, --version          Print version and exit\n"
+		"  --headless             Initialise DRM but never program the CRTC, so\n"
+		"                         the console stays visible; renders off-screen\n"
+		"                         only (for debugging logs live during boot)\n"
+		"  --check                Validate --config/--cmds without opening DRM\n"
+		"                         and exit (0 = ok); for testing boot configs\n"
+		"  --dump <file.png>      Render one frame (from --config/--cmds) to a\n"
+		"                         PNG and exit; pair with --headless to avoid\n"
+		"                         touching the live console\n"
+		"  -q, --quiet            Silence all output (even errors)\n"
+		"  -v, -vv, -vvv          Increase verbosity (info / debug / trace)\n"
+		"  --debug                Alias for -vv (debug verbosity)\n"
+		"  --log <target>         Log sink: auto (default), stderr, syslog, kmsg\n"
+		"  -V, --version          Print version and exit\n"
 		"  -h, --help             Print this summary and exit\n"
 		"  --help <cmd>           Print full parameter list for a command\n\n"
 		"Config JSON format:\n"
@@ -79,6 +95,11 @@ static void print_usage(const char *prog) {
 		"  clear       bg_color         image\n"
 		"  text        remove_text\n"
 		"  rect        remove_rect\n"
+		"  ellipse     circle           remove_ellipse  remove_circle\n"
+		"  line        remove_line\n"
+		"  stepper     remove_stepper\n"
+		"  marquee     remove_marquee\n"
+		"  sprite      remove_sprite\n"
 		"  overlay     remove_overlay\n"
 		"  progress    update_progress  hide_progress\n"
 		"  arc         update_arc       hide_arc\n"
@@ -132,7 +153,7 @@ static char *read_file(const char *path) {
 }
 
 /* Load the optional config (currently just font slots). */
-int load_config(splash_state_t *st, const char *config_str) {
+int load_config(const char *config_str) {
 	char *json_data = NULL;
 	int needs_free = 0;
 
@@ -141,9 +162,7 @@ int load_config(splash_state_t *st, const char *config_str) {
 	} else {
 		json_data = read_file(config_str);
 		if (!json_data) {
-			if (!st->quiet)
-				fprintf(stderr, "Cannot read config file: %s\n",
-				        config_str);
+			LOGW("cannot read config file: %s", config_str);
 			return -1;
 		}
 		needs_free = 1;
@@ -154,8 +173,7 @@ int load_config(splash_state_t *st, const char *config_str) {
 		free(json_data);
 
 	if (!root) {
-		if (!st->quiet)
-			fprintf(stderr, "Invalid config JSON\n");
+		LOGW("invalid config JSON");
 		return -1;
 	}
 
@@ -172,14 +190,12 @@ int load_config(splash_state_t *st, const char *config_str) {
 			float size       = get_float(font, "size", 24.0f);
 
 			if (slot >= 0 && slot < MAX_FONTS && path) {
-				if (font_load(path, size, slot) < 0 && !st->quiet) {
-					fprintf(stderr,
-					        "Warning: Could not load font %s to slot %d\n",
-					        path, slot);
-				} else if (st->debug) {
-					fprintf(stderr,
-					        "[debug] Loaded font %s to slot %d (size %.1f)\n",
-					        path, slot, size);
+				if (font_load(path, size, slot) < 0) {
+					LOGW("could not load font %s to slot %d",
+					     path, slot);
+				} else {
+					LOGD("loaded font %s to slot %d (size %.1f)",
+					     path, slot, size);
 				}
 			}
 		}
@@ -189,8 +205,10 @@ int load_config(splash_state_t *st, const char *config_str) {
 	return 0;
 }
 
-/* Run the optional startup command batch (client_idx -1: no replies). */
-int process_startup_cmds(splash_state_t *st, const char *cmds_str) {
+/* Run the optional startup command batch (client_idx -1: no replies).
+ * out_total/out_errors (optional) report how many commands ran and failed. */
+int process_startup_cmds(splash_state_t *st, const char *cmds_str,
+                         int *out_total, int *out_errors) {
 	char *json_data = NULL;
 	int needs_free = 0;
 
@@ -199,9 +217,7 @@ int process_startup_cmds(splash_state_t *st, const char *cmds_str) {
 	} else {
 		json_data = read_file(cmds_str);
 		if (!json_data) {
-			if (!st->quiet)
-				fprintf(stderr, "Cannot read commands file: %s\n",
-				        cmds_str);
+			LOGW("cannot read commands file: %s", cmds_str);
 			return -1;
 		}
 		needs_free = 1;
@@ -212,13 +228,21 @@ int process_startup_cmds(splash_state_t *st, const char *cmds_str) {
 		free(json_data);
 
 	if (!root) {
-		if (!st->quiet)
-			fprintf(stderr, "Invalid commands JSON\n");
+		LOGW("invalid commands JSON");
 		return -1;
 	}
 
-	process_json_batch(st, root, -1);
+	int total = 0, errors = 0;
+	process_json_batch(st, root, -1, &total, &errors);
 	cJSON_Delete(root);
+
+	if (out_total)  *out_total  = total;
+	if (out_errors) *out_errors = errors;
+
+	if (errors > 0) {
+		LOGW("%d of %d startup command(s) failed", errors, total);
+		return -1;
+	}
 	return 0;
 }
 
@@ -279,6 +303,13 @@ int main(int argc, char **argv) {
 	const char *config_arg = NULL;
 	const char *cmds_arg   = NULL;
 	int         fork_daemon = 0;
+	int         headless    = 0;
+	int         check_mode  = 0;
+	const char *dump_path   = NULL;
+
+	int        verbosity = 0;   /* 0=error 1=info 2=debug 3=trace (raised by -v) */
+	int        quiet     = 0;   /* -q: silence everything, even errors */
+	log_sink_t log_sink  = LOG_SINK_AUTO;
 
 	splash_state_t st = {0};
 	st.bg_color   = 0;
@@ -287,7 +318,7 @@ int main(int argc, char **argv) {
 	for (int i = 0; i < MAX_SOCKET_CLIENTS; i++)
 		st.client_fds[i] = -1;
 
-	if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0) {
+	if (strcmp(argv[1], "-V") == 0 || strcmp(argv[1], "--version") == 0) {
 		printf("splash-drm v%s\n", SPLASH_VERSION);
 		return 0;
 	} else if (strcmp(argv[1], "--help") == 0 && argc >= 3) {
@@ -313,20 +344,57 @@ int main(int argc, char **argv) {
 			cmds_arg = argv[++i];
 		}
 		else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
-			int secs = atoi(argv[++i]);
-			if (secs > 0)
-				st.watchdog_ms = (uint32_t)secs * 1000u;
+			const char *arg = argv[++i];
+			char *end;
+			errno = 0;
+			long secs = strtol(arg, &end, 10);
+			if (errno != 0 || end == arg || *end != '\0' || secs <= 0) {
+				fprintf(stderr, "splash-drm: invalid --timeout '%s' "
+				        "(expected a positive number of seconds)\n", arg);
+				return 1;
+			}
+			if (secs > 86400)		/* clamp to a day; avoids the *1000 overflow */
+				secs = 86400;
+			st.watchdog_ms = (uint32_t)secs * 1000u;
 		}
 		else if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
-			st.quiet = 1;
+			quiet = 1;
+		}
+		else if (strcmp(argv[i], "-v") == 0) {
+			verbosity += 1;
+		}
+		else if (strcmp(argv[i], "-vv") == 0) {
+			verbosity += 2;
+		}
+		else if (strcmp(argv[i], "-vvv") == 0) {
+			verbosity += 3;
 		}
 		else if (strcmp(argv[i], "--debug") == 0) {
-			st.debug = 1;
+			if (verbosity < 2)
+				verbosity = 2;
+		}
+		else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
+			int ok;
+			log_sink_t s = log_sink_from_string(argv[++i], &ok);
+			if (ok)
+				log_sink = s;
+			else
+				fprintf(stderr, "splash-drm: unknown --log target '%s' "
+				        "(use auto/stderr/syslog/kmsg)\n", argv[i]);
 		}
 		else if (strcmp(argv[i], "--fork") == 0) {
 			fork_daemon = 1;
 		}
-		else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+		else if (strcmp(argv[i], "--headless") == 0) {
+			headless = 1;
+		}
+		else if (strcmp(argv[i], "--check") == 0) {
+			check_mode = 1;
+		}
+		else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
+			dump_path = argv[++i];
+		}
+		else if (strcmp(argv[i], "-V") == 0 || strcmp(argv[i], "--version") == 0) {
 			printf("splash-drm v%s\n", SPLASH_VERSION);
 			return 0;
 		}
@@ -336,25 +404,64 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	if (drm_init(&st.drm, device) < 0) {
-		if (!st.quiet)
-			fprintf(stderr, "Failed to initialize DRM on %s\n", device);
+	/* Resolve verbosity into a threshold and bring the logger up before any
+	 * DRM/socket work, so early failures are reported through the same sink. */
+	log_level_t log_level = quiet      ? LOG_SILENT :
+	                        verbosity <= 0 ? LOG_ERROR :
+	                        verbosity == 1 ? LOG_INFO  :
+	                        verbosity == 2 ? LOG_DEBUG : LOG_TRACE;
+	log_init(log_level, log_sink);
+
+	if (check_mode) {
+		/* Validate --config/--cmds without opening DRM or the socket, so a
+		 * boot.json can be checked on a build host. Surface warnings even at
+		 * the default (ERROR) threshold. */
+		if (log_threshold < LOG_INFO)
+			log_set_level(LOG_INFO);
+		g_validate_only = 1;	/* skip asset loads; validate structure only */
+
+		/* Stub a typical resolution so percentage coordinates resolve. */
+		st.drm.mode.hdisplay = 1920;
+		st.drm.mode.vdisplay = 1080;
+
+		int problems = 0, total = 0, errors = 0;
+		if (config_arg && load_config(config_arg) < 0) {
+			LOGE("config: failed to load");
+			problems++;
+		}
+		if (cmds_arg) {
+			if (process_startup_cmds(&st, cmds_arg, &total, &errors) < 0 &&
+			    total == 0)
+				problems++;		/* read/parse failure: nothing ran */
+			problems += errors;
+		}
+
+		font_unload_all();
+		fprintf(stderr, "check: %d command(s) parsed, %d problem(s) - %s\n",
+		        total, problems, problems ? "FAILED" : "OK");
+		return problems ? 1 : 0;
+	}
+
+	if (drm_init(&st.drm, device, headless) < 0) {
+		LOGE("failed to initialize DRM on %s", device);
 		return 1;
 	}
 
-	if (!st.quiet)
-		printf("splash-drm v%s: DRM %dx%d @ %dHz\n", SPLASH_VERSION,
-		       st.drm.mode.hdisplay, st.drm.mode.vdisplay,
-		       st.drm.mode.vrefresh);
+	LOGI("v%s, DRM %dx%d @ %dHz", SPLASH_VERSION,
+	     st.drm.mode.hdisplay, st.drm.mode.vdisplay,
+	     st.drm.mode.vrefresh);
+	if (headless)
+		LOGI("headless: rendering off-screen, console left visible");
 
 	if (config_arg) {
-		if (load_config(&st, config_arg) < 0 && !st.quiet)
-			fprintf(stderr, "Warning: Failed to load config\n");
+		if (load_config(config_arg) < 0)
+			LOGW("failed to load config");
 	}
 
-	if (socket_init(&st) < 0) {
-		if (!st.quiet)
-			fprintf(stderr, "Failed to create abstract socket\n");
+	/* --dump is a one-shot screenshot: skip the control socket entirely so it
+	 * never collides with a running daemon's abstract name. */
+	if (!dump_path && socket_init(&st) < 0) {
+		LOGE("failed to create abstract socket");
 		drm_cleanup(&st.drm);
 		font_unload_all();
 		return 1;
@@ -368,10 +475,8 @@ int main(int argc, char **argv) {
 	st.needs_render = 1;
 	st.frozen       = 0;
 
-	if (cmds_arg) {
-		if (process_startup_cmds(&st, cmds_arg) < 0 && !st.quiet)
-			fprintf(stderr, "Warning: Failed to process startup commands\n");
-	}
+	if (cmds_arg)
+		process_startup_cmds(&st, cmds_arg, NULL, NULL);
 
 	/* Pick up any animation/spinner started by the startup commands, so
 	 * the first poll already uses the short (RENDER_FPS) timeout. */
@@ -381,10 +486,42 @@ int main(int argc, char **argv) {
 	if (st.needs_render)
 		render_frame(&st);
 
-	if (fork_daemon && daemonize() < 0 && !st.quiet)
-		fprintf(stderr, "Warning: daemonize failed, staying in foreground\n");
-	else if (!fork_daemon)
-		setsid();
+	/* --dump: one frame is now composed; write it out and exit. */
+	if (dump_path) {
+		int rc = write_buffer_png(&st.drm.buf[st.drm.front_buf], dump_path);
+		if (rc == 0)
+			LOGI("dumped frame to %s", dump_path);
+		else
+			LOGE("failed to write %s", dump_path);
+		kbd_cleanup(&st);
+		socket_cleanup(&st);
+		clear_all_elements(&st);
+		free_image(&st.bg_image);
+		font_unload_all();
+		drm_cleanup(&st.drm);
+		log_close();
+		return rc == 0 ? 0 : 1;
+	}
+
+	if (fork_daemon) {
+		if (daemonize() < 0) {
+			LOGW("daemonize failed, staying in foreground");
+		} else {
+			/* Child: stdio is now /dev/null, so an AUTO sink must move off
+			 * stderr onto syslog/kmsg. A sink forced via --log is kept. */
+			log_reopen(1);
+			LOGI("forked to background (pid %d)", (int)getpid());
+		}
+	} else {
+		/* setsid() fails with EPERM when we are already a process-group leader
+		 * (the common `exec splash-drm` init case); surface it so an operator
+		 * can see the daemon stayed in the original session. */
+		if (setsid() < 0)
+			LOGW("setsid failed (%s); staying in current session - "
+			     "use --fork for a clean initramfs detach", strerror(errno));
+	}
+
+	LOGT("entering main loop");
 
 	while (st.running && !g_terminate) {
 		struct pollfd fds[1 + MAX_SOCKET_CLIENTS + 1];
@@ -425,7 +562,8 @@ int main(int argc, char **argv) {
 		if (ret < 0) {
 			if (errno == EINTR)
 				continue;		/* signal: re-check the loop guard */
-			perror("poll");
+			exit_reason = "poll error";
+			LOGE("poll: %s", strerror(errno));
 			break;
 		}
 
@@ -436,15 +574,13 @@ int main(int argc, char **argv) {
 		 * stuck boot script can never leave the splash up forever. */
 		if (st.watchdog_ms > 0 && !st.frozen &&
 		    now_ms() - st.last_activity_ms >= st.watchdog_ms) {
-			if (st.debug)
-				fprintf(stderr, "[debug] watchdog: idle timeout, exiting\n");
+			exit_reason = "watchdog idle timeout";
 			break;
 		}
 
 		/* Delayed exit: triggered by {"cmd":"exit","delay":<seconds>}. */
 		if (st.exit_at_ms > 0 && now_ms() >= st.exit_at_ms) {
-			if (st.debug)
-				fprintf(stderr, "[debug] exit delay elapsed, shutting down\n");
+			exit_reason = "delayed exit elapsed";
 			break;
 		}
 
@@ -470,8 +606,16 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	if (st.debug && g_terminate)
-		fprintf(stderr, "[debug] caught termination signal, shutting down\n");
+	/* Report why the loop ended exactly once. */
+	if (g_terminate) {
+		const char *sig =
+			(g_term_sig == SIGHUP)  ? "SIGHUP"  :
+			(g_term_sig == SIGTERM) ? "SIGTERM" :
+			(g_term_sig == SIGINT)  ? "SIGINT"  : "signal";
+		LOGI("exiting on %s", sig);
+	} else {
+		LOGI("exiting: %s", exit_reason);
+	}
 
 	kbd_cleanup(&st);
 	socket_cleanup(&st);
@@ -480,7 +624,7 @@ int main(int argc, char **argv) {
 	font_unload_all();
 	drm_cleanup(&st.drm);
 
-	if (!st.quiet)
-		printf("splash-drm exited cleanly\n");
+	LOGT("cleanup complete");
+	log_close();
 	return 0;
 }

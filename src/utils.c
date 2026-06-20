@@ -85,8 +85,14 @@ int get_coord(cJSON *obj, const char *key, int dim, int default_val) {
 	if (cJSON_IsString(item)) {
 		const char *s = item->valuestring;
 		size_t len = strlen(s);
-		if (len > 1 && s[len - 1] == '%')
-			return (int)((float)dim * (float)atof(s) / 100.0f + 0.5f);
+		if (len > 1 && s[len - 1] == '%') {
+			/* Reject inf/nan and anything that would overflow the int cast
+			 * (e.g. "1e40%"): converting such a value is undefined. */
+			double v = (double)dim * atof(s) / 100.0 + 0.5;
+			if (!isfinite(v) || v <= (double)INT_MIN || v >= (double)INT_MAX)
+				return default_val;
+			return (int)v;
+		}
 	}
 	return default_val;
 }

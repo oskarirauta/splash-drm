@@ -1,7 +1,9 @@
-name: "C++ CI build"
+name: "CI build"
 run-name: ${{ github.actor }} executed build ${{ inputs.testname }}
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
       testname:
@@ -13,13 +15,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
-    - name: install libdrm
-      run: |
-        # Refresh the apt index first: the runner image ships a stale package
-        # cache, so installing straight away fails with 404s on the .deb.
-        sudo apt-get update
-        sudo apt-get install -y libdrm-dev
+    # No libdrm-dev: the build uses the vendored drm/ headers and links no
+    # libdrm at runtime, so installing the system package would only mask a
+    # broken self-contained header path.
     - name: submodules
-      run: git submodule update --init --recursive --remote
-    - name: make
+      # No --remote: build the pinned submodule commits we actually ship,
+      # not each dependency's upstream HEAD.
+      run: git submodule update --init --recursive
+    - name: make (dynamic)
       run: make
+    - name: make static (glibc)
+      run: make clean && make static
+    - name: make static (musl/Alpine, the initramfs target)
+      # The headline use case is a dependency-free static musl binary. Build it
+      # in an Alpine container and fail if it ended up with any shared-lib deps.
+      run: |
+        docker run --rm -v "$PWD":/src -w /src alpine:latest sh -c '
+          apk add --no-cache build-base >/dev/null &&
+          make clean &&
+          make static &&
+          if ldd splash-drm 2>&1 | grep -q "=>"; then
+            echo "ERROR: splash-drm has shared-library dependencies:"; ldd splash-drm; exit 1;
+          fi &&
+          echo "musl static build is dependency-free: OK"
+        '

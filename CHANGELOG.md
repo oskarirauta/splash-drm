@@ -3,14 +3,69 @@
 All notable changes to splash-drm are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [4.0.0] - 2026-06-20
 
 ### New files
 
 - **src/kbd.c** — evdev keyboard input handler (ESC toggle).
 - **src/qr.c** — QR code element rendering (nayuki/QR-Code-generator vendored as `qrcodegen/` submodule).
+- **src/log.c / include/log.h** — unified logging module: an ordered severity
+  threshold and a selectable output sink, both global, so any source file can
+  log without threading `splash_state_t` around.
 
 ### Added
+
+- **Automatic OpenWrt boot-progress companion (contrib/, Makefile)** — Added
+  `contrib/openwrt-boot-progress-auto.sh`: a zero-touch hook for OpenWrt. Every
+  init script flows through `/etc/rc.common` (re-sourced once per script), so
+  sourcing this file there — right after its `shift 2` — makes every
+  `/etc/rc.d/S*` boot script advance a deterministic *N-of-total*
+  `progress`/`arc` bar (`id=0`) and log a `starting <svc>` line to a `console`
+  (`id=0`), with no per-service edits. It self-limits to the boot window (each
+  update is a `splash-ctl` call that fails silently once the daemon exits) and
+  is fully configurable via environment variables. The previous manual helper
+  script was renamed to `contrib/openwrt-boot-progress-simple.sh` (its
+  `splash_progress_done` / `splash_status_text` / `splash_boot_done` helpers are
+  unchanged, for hand-placed reporting). `make install` now also installs both
+  companions to `$(PREFIX)/share/splash/`. A ready-made layout,
+  `examples/openwrt-boot.json`, creates the matching `progress` and `console`
+  (`id=0`) elements — a title, a scrolling `starting <svc>` log and a percentage
+  bar — so the automatic hook is plug-and-play.
+
+- **Overlay effects — rounded corners, rotation, tint (cmd.c / render.c)** — The
+  `overlay` element gained three optional effect parameters: `radius` (rounded-
+  corner clip radius in px, `0` = none), `angle` (rotation around the image's
+  centre in degrees, `0` = none), and `tint` (a multiply tint whose alpha is the
+  strength — omit or alpha `0` for no tint, a white tint is a no-op, a coloured
+  tint multiplies the image toward that colour). All three sample bilinearly. On
+  a merge update of an existing overlay the `path` is now optional — omit it to
+  keep the current image and change only other fields (e.g. just the `angle`); a
+  fresh overlay still requires `path`.
+
+- **Text outline / stroke (cmd.c / font.c)** — The `text` element accepts
+  optional `"outline": <pixels>` and `"outline_color": <color>` parameters. The
+  outline is drawn under the glyphs as a stroke of the given width (`0` = none,
+  the default; default colour opaque black), keeping text legible over busy or
+  low-contrast backgrounds.
+
+- **Console per-line colour (cmd.c)** — `console_write` accepts an optional
+  `"color"` parameter that sets the colour of the line(s) being written. Each
+  written line retains its own colour; lines written without `color` use the
+  console's default colour, so a single console can mix colours — e.g.
+  severity-coloured boot logs (green ok / yellow warn / red fail).
+
+- **Generalised `animate` — position / size / colour (anim.c / cmd.c)** — The
+  `animate` command, previously opacity-only, gained a `property` field selecting
+  what to animate: `opacity` (float 0..1, as before), `x`/`y` (int pixels, move
+  the element), `w`/`h` (int pixels, resize / grow), or `color` (per-channel
+  colour lerp). `from`/`to` are interpreted per property (pixel integers for
+  x/y/w/h, colours for `color`, 0..1 floats for opacity) and `from` defaults to
+  the element's current value; `duration`, `easing`, `repeat`, and
+  `remove_on_end` work the same for every property. Each element animates only
+  the properties it has — most support `opacity`/`x`/`y`, `w`/`h` also work on
+  rect/marquee/console/sprite/progress/overlay/ellipse, and `color` also on
+  text/rect/ellipse/line/marquee/console/spinner/qr — and an unsupported
+  property/element returns an error.
 
 - **Path resolution (utils.c)** — `resolve_font_path()` and `resolve_image_path()`
   try the bare path first, then standard installation prefixes
@@ -65,6 +120,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   1=round end caps), `show_percent` with font options, `indeterminate` spinning
   mode with `indet_period_ms`. Commands: `arc`, `update_arc`, `hide_arc`.
 
+- **Ellipse / circle, line, and stepper elements (render.c, cmd.c, elements.c)**
+  — Three new element types. `ellipse` (with `circle` as an alias) draws a filled
+  disc or, with `thickness > 0`, an outline ring, centred at `(x, y)`; `radius`
+  is shorthand for `rx`, and `ry` 0 mirrors `rx`. `line` draws a divider from
+  `(x1, y1)` to `(x2, y2)` with configurable `thickness` and `cap` (0 = flat,
+  1 = round). `stepper` renders a centred row of dots (`style` 0) or pills
+  (`style` 1) as a boot-stage indicator: the first `current` of `count` steps are
+  drawn "done" (`color_done`) and the rest "todo" (`color_todo`, filled or
+  outlined via `thickness`), advanced as boot progresses with a merge update such
+  as `{"cmd":"stepper","id":0,"current":3}`. All three honour the merge /
+  `replace` / `remove` model, opacity `animate`, and `query`. Commands:
+  `ellipse`, `circle`, `remove_ellipse`, `remove_circle`, `line`, `remove_line`,
+  `stepper`, `remove_stepper`.
+
+- **Marquee and sprite elements (render.c, cmd.c, elements.c)** — Two new
+  element types. `marquee` scrolls a single line of text horizontally inside a
+  clip box (default 400×40), repeating it with `gap` spacing for a seamless loop
+  and clipping to the box; `speed` sets px/sec (`>0` left, `<0` right, `0`
+  static) and, like `text`/`console`, it needs a loaded font slot. `sprite`
+  cycles through a list of loaded images (`frames`, PNG/JPEG, up to 32) at `fps`
+  frames per second — e.g. an animated logo or spinner — with `loop` false
+  playing once and holding the last frame, and a merge update reloading `frames`
+  only when supplied so omitting it keeps the running animation. Both honour the
+  merge / `replace` / `remove` model, opacity `animate`, and `query`. Commands:
+  `marquee`, `remove_marquee`, `sprite`, `remove_sprite`.
+
 - **Percentage coordinates** — All element commands now accept percentage strings
   for positional and size fields (`"x": "50%"`, `"w": "80%"`, etc.). The value
   is resolved against the display width (for x/w) or height (for y/h) at command
@@ -86,6 +167,137 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Console and QR centering** — `console` and `qr` elements now support the
   same negative-coordinate centre shorthand as other elements (`"x": -1` places
   the element horizontally centred on screen).
+
+- **Levelled logging (log.c / log.h)** — Five ordered levels —
+  `ERROR < WARN < INFO < DEBUG < TRACE` — replace the old ad-hoc
+  `if (st->debug) fprintf(...)` / `if (!st->quiet) ...` checks scattered across
+  the daemon. A message is emitted only when its level is at or below the active
+  threshold. New verbosity flags raise the threshold: `-v` → INFO, `-vv` → DEBUG,
+  `-vvv` → TRACE; `--debug` is an alias for `-vv`. The default threshold is ERROR
+  (silent but for genuine failures) and `-q`/`--quiet` drops below it for total
+  silence. DRM bring-up (`drm.c`) — previously silent — now reports the chosen
+  connector/CRTC/mode at DEBUG and traces each cold-boot connector-probe retry at
+  TRACE; the control socket, keyboard handler and command dispatch likewise emit
+  diagnostics at appropriate levels.
+
+- **Selectable log sink (`--log <auto|stderr|syslog|kmsg>`)** — `auto` (default)
+  keeps a foreground run on stderr, while a `--fork`ed daemon — whose stdio is
+  redirected to `/dev/null` — falls back to the syslog socket (`/dev/log`) and
+  then the kernel log (`/dev/kmsg`). The syslog sink is a direct `AF_UNIX`
+  datagram writer (not libc `syslog()`), tagged `splash-drm[pid]` at the
+  `daemon` facility, so the kmsg fallback stays under the daemon's control. A
+  sink can also be forced explicitly, independent of forking; a forced sink that
+  is unavailable degrades down the same chain rather than dropping messages.
+
+- **Headless mode (`--headless`)** — Initialises DRM and allocates/renders the
+  double buffers as usual, but never programs the CRTC: the initial scan-out,
+  every `drm_flip()`, and the cleanup restore are all suppressed, so the existing
+  console scan-out stays on screen. Rendering still happens off-screen (the full
+  render path is exercised and command replies are unaffected), making this a
+  safe way to watch logs and console output live during boot — the splash never
+  covers them. Composes with `-vvv`/`--log` for live diagnostics. Because the
+  CRTC is never touched it requires DRM master neither to start nor to run.
+
+- **Config-check mode (`--check`)** — Validates a boot configuration
+  (`--config`/`--cmds`: JSON structure, known commands, parameters) without
+  opening DRM, the socket, or the referenced asset files, then exits non-zero on
+  any structural problem. Lets a `boot.json` be checked on a build host before
+  deploying to initramfs, where a typo is worst to discover. Referenced
+  images/fonts are skipped (a global `g_validate_only` short-circuits
+  `load_image()`/`font_load()`), so a config that is structurally fine passes
+  even where the assets are not present.
+
+- **Screenshot/dump mode (`--dump <file.png>`)** — Renders a single frame from
+  `--config`/`--cmds` to a PNG file at the connected display's resolution, then
+  exits. It runs neither the daemon loop nor the control socket (so it never
+  collides with a running daemon's abstract name) and reuses the normal render
+  path via `write_buffer_png()`. Composes with `--headless` to render entirely
+  off-screen, leaving the live console untouched — a one-shot way to preview a
+  boot configuration on a build host or capture golden frames for testing.
+
+- **Build & packaging (Makefile)** — `make strip` (separate target, so
+  packagers that strip themselves are not second-guessed), `make install` /
+  `make uninstall` honouring `DESTDIR`/`PREFIX`, `-MMD -MP` header dependency
+  tracking, and a CI workflow that now runs on push/PR and builds both the
+  dynamic and the static (incl. musl/Alpine) targets.
+
+- **Merge-update attributes and `remove_spinner`** — Element commands now accept
+  `"replace": true` (reset the element to defaults before applying the supplied
+  fields) and `"remove": true` (delete the element in place, like the matching
+  `remove_*` command). A new `remove_spinner` command fills the one gap in the
+  `remove_*` family (the spinner was previously only hideable via
+  `action:"hide"`). A `get_bool` JSON helper now accepts `true`/`false` or `1`/`0`
+  for every boolean field, so merge updates can preserve them.
+
+### Changed
+
+- **CLI: `-v` is now verbosity, not version** — `-v`/`-vv`/`-vvv` raise the log
+  level (see above). The short flag for printing the version moved to **`-V`**;
+  the long form `--version` is unchanged.
+
+- **Boot-tracing folded into the TRACE level** — The always-on `/dev/kmsg`
+  progress markers in `main.c` (added to pinpoint where the daemon was being
+  torn down during the initramfs→rootfs `switch_root`) are gone. The handful
+  that remain useful are now ordinary `LOGT(...)` calls, silent unless `-vvv`
+  is given, instead of writing to the kernel log unconditionally.
+
+- **`splash_state_t` slimmed** — The `quiet` and `debug` fields were removed;
+  verbosity now lives in the logging module's global threshold. `load_config()`
+  no longer takes a `splash_state_t *` (it only needed it for those flags).
+
+- **`splash-ctl` version flag** — `-V`/`--version` is now the primary version
+  flag (matching the daemon), with `-v` kept as a deprecated alias so existing
+  scripts keep working.
+
+- **README / REFERENCE synced** — The daemon options tables documented the old
+  `-v, --version`; they now describe `-v/-vv/-vvv`, `-V`, `--log`, `--headless`
+  and `--check`, plus prose on the logging levels/sinks. The undocumented
+  spinner `show_animated`/`hide_animated` actions were added, the console `size`
+  default corrected (slot's loaded size, not 14), and `src/log.c`/`include/log.h`
+  added to the project tree.
+
+- **Element commands merge on update** — Re-sending `text`, `rect`, `overlay`,
+  `progress`, `arc`, `spinner`, `console` or `qr` with an existing `id` now
+  MERGES: only the fields supplied change, and every omitted field keeps its
+  current value. Previously each omitted field reset to its default — sending
+  `{id:0, text:"world"}` recentred the text and dropped it to the default font.
+  `replace: true` restores the old full-reset behavior, and a merge update no
+  longer cancels a running opacity animation unless `opacity` is given. The
+  `update_*` / `remove_*` / `hide_*` commands remain as explicit aliases.
+
+### Performance
+
+All renderer changes below were verified output-preserving: before/after
+`--dump` of the same scene produces a byte-identical PNG (`md5sum`).
+
+- **Arc bar drawn in a single pass (render.c)** — `draw_arc_bar` walked its
+  bounding box twice, recomputing `sqrtf`/`atan2f` per pixel each time (once for
+  the background ring, once for the fill). The passes are merged into one loop
+  that computes the distance and angle once and applies the background then the
+  fill, halving the transcendental math per covered pixel.
+
+- **Background scaling cached across frames (render.c)** — A non-nearest
+  background image (Lanczos/bicubic/bilinear) was re-resampled every frame, so a
+  crossfade or any concurrent animation re-ran the full kernel each tick. The
+  steady-state result is now cached (`resample_image_to` into `bg_cache`) and
+  blitted 1:1 while valid; it is rebuilt only when the image, output size or
+  filter changes (`bg_cache_dirty`). The live path still runs during a crossfade,
+  where the source genuinely changes each frame.
+
+- **Marquee text rasterised once, not per frame (font.c, cmd.c, elements.c)** — A
+  scrolling `marquee` re-rasterised its entire text every frame just to re-tile
+  the same bitmap at a new scroll offset. The rasterised coverage is now cached
+  on the element and reused as it scrolls; it is rebuilt only when the text, font
+  slot or size changes (`cov_dirty`, set by `cmd_marquee`) and freed on
+  remove/replace/clear (`marquee_free_cache`). As the marquee animates
+  continuously, this removes a full glyph rasterisation from every rendered frame.
+
+- **Shared anchor / percent-label helpers (render.c, font.c, splash.h)** — The
+  `x|y < 0 → centre` anchor maths (duplicated across text, progress, rect and
+  ellipse) is now one `resolve_anchor()` inline, and the progress and arc
+  percentage labels share one `draw_centered_percent()`. Pure de-duplication —
+  byte-identical output, and the two percent labels can no longer drift apart in
+  their rounding.
 
 ### Fixed (pre-release cleanup)
 
@@ -110,6 +322,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Makefile** — `make static` straight after `make` was silently a no-op:
+  the objects and binary already existed and only `-static` (a flag make cannot
+  see) had changed, so a *dynamic* binary was shipped as "static". The static
+  build now compiles into its own object directory (via a recursive sub-make) so
+  it always relinks correctly, and `splash-ctl` now honours `LDFLAGS` so it, too,
+  is actually static.
+
+- **image.c / font.c** — A control-socket `image`/`overlay`/font path pointing
+  at a FIFO or blocking device wedged the single-threaded daemon forever in a
+  blocking `open()`/`fopen()`. Loads now use `O_NONBLOCK` and require a regular
+  file (`fstat`/`S_ISREG`), and log the path and failure class.
+
+- **cmd.c — documented parameters that silently did nothing** — `rect`
+  `grad_dir`, `progress` `bar_gradient`, and the `progress` percent-label
+  `font_slot`/`font_size` were read under different keys than the docs specified,
+  and `arc` `show_percent`/`indeterminate` were parsed with `get_int` so a JSON
+  boolean was dropped; `qr` `align`/`valign` ignored their string forms. All now
+  accept the documented keys (with the old names kept as legacy aliases) and
+  JSON `true`/`false` via a new `get_bool` helper.
+
+- **cmd.c — `query` was case-sensitive while `animate` was not** — `query
+  type=Text` returned "unknown type" though `animate type=Text` worked. Both use
+  `strcasecmp` now.
+
+- **drm.c** — Signed-integer shift UB in `find_crtc_for_encoder` (`1 << i` for
+  `i` up to 63); guarded to `i < 32 && (1u << i)`.
+
+- **render.c / utils.c / qr.c** — Out-of-range client values could reach
+  undefined float→int conversions or integer overflow: the progress percent text
+  cast, `get_coord`'s percentage parse (`"1e40%"`), and the QR `module_px *
+  total` size. Each is now clamped/validated.
+
+- **socket.c** — A short/failed reply `write()` on the non-blocking client fd
+  was ignored, leaving the client blocked forever on a missing newline; the
+  client is now dropped. The dead abstract-socket "stale → rebind" probe (an
+  abstract name can never be stale) was removed.
+
+- **main.c** — `--timeout` parsed with `atoi`, so a typo silently disabled the
+  watchdog; it is validated with `strtol` and rejected. A failed non-fork
+  `setsid()` is now logged instead of being invisible.
+
 - **anim.c** — Ping-pong animations drifted over time because the period anchor
   was reset to the current timestamp (`start_ms = now`) instead of being
   stepped forward by exactly one period (`start_ms += duration_ms`). Render
@@ -123,8 +376,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   premultiplying the colour before writing it to the buffer.
 
 - **render.c** — Spinner spoke bounding box used `max(half_len, half_w)` as the
-  half-extent, which clips the tips of spokes rotated near 45°. The correct
-  worst-case half-extent for a rotated capsule is `half_len + half_w`.
+  half-extent, which clips the tips of spokes rotated near 45°. It now uses the
+  exact per-angle rotated half-extents of the capsule (`half_len·|cos θ| +
+  half_w·|sin θ|` and the transpose, `+1 px` for the AA edge), which both ends
+  the clipping and keeps the SDF-tested pixel count tight — a generous
+  `half_len + half_w` square would test several times more pixels per spoke.
 
 - **drm.c** — `calloc()` results in `_drmModeGetResources` and
   `_drmModeGetConnector` were passed directly to `memcpy()` without NULL checks.

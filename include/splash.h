@@ -29,16 +29,23 @@
 #include <xf86drmMode.h>
 
 #include "cJSON/cJSON.h"
+#include "log.h"
 
 /* ========================================================================
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "3.7.1"
+#define SPLASH_VERSION      "4.0.0"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8
 #define MAX_RECTANGLES      16
+#define MAX_ELLIPSES        16
+#define MAX_LINES           16
+#define MAX_STEPPERS        4
+#define MAX_MARQUEES        4
+#define MAX_SPRITES         4
+#define MAX_SPRITE_FRAMES   32
 #define MAX_FONTS           5
 #define MAX_SPINNERS        4
 #define MAX_CONSOLES        2
@@ -128,6 +135,13 @@ static inline uint32_t apply_opacity(uint32_t color, float opacity) {
 	return (color & 0x00FFFFFFu) | (a << 24);
 }
 
+/* Resolve a one-axis anchor: a negative coordinate centres on the given extent
+ * (integer divide, matching the renderer's existing centring); any other value
+ * is taken as-is. Shared by every element that supports x/y = -1 centring. */
+static inline int resolve_anchor(int coord, int extent) {
+	return (coord < 0) ? extent / 2 : coord;
+}
+
 /* ========================================================================
  * Pixel Blending
  * ======================================================================== */
@@ -183,6 +197,7 @@ typedef struct {
 	drmModeModeInfo mode;
 	drm_buffer_t    buf[2];
 	int             front_buf;
+	int             headless;    /* render off-screen; never program the CRTC */
 	struct {
 		uint32_t        crtc_id;
 		uint32_t        buffer_id;
@@ -203,6 +218,7 @@ typedef struct {
 
 int  load_image(const char *path, image_t *img);
 void free_image(image_t *img);
+int  write_buffer_png(const drm_buffer_t *buf, const char *path);
 
 /* ========================================================================
  * Font Type
@@ -229,15 +245,23 @@ void font_unload_all(void);
  * Animation
  * ======================================================================== */
 
-/* A time-based opacity animation (0..1). */
+/* What field an animation drives. */
+#define ANIM_FLOAT  0         /* target is float*  (e.g. opacity) */
+#define ANIM_INT    1         /* target is int*    (e.g. x, y, w, h) */
+#define ANIM_COLOR  2         /* target is uint32_t* (ARGB, lerped per channel) */
+
+/* A time-based tween of one element field from -> to. */
 typedef struct {
 	int      active;
 	int      easing;          /* EASE_* */
-	float    from, to;
+	float    from, to;        /* ANIM_FLOAT / ANIM_INT endpoints */
+	uint32_t from_color, to_color;   /* ANIM_COLOR endpoints */
 	uint64_t start_ms;
 	uint32_t duration_ms;
 	int      remove_on_end;   /* deactivate the element when the anim ends */
 	int      repeat;          /* loop forever, ping-ponging from <-> to */
+	int      kind;            /* ANIM_* - selects how `target` is written */
+	void    *target;          /* the field to animate (set at anim creation) */
 } anim_t;
 
 /* ========================================================================
@@ -265,6 +289,10 @@ typedef struct {
 	int      shadow_blur;
 	uint32_t shadow_color;
 
+	/* Outline / stroke (optional) */
+	int      outline;         /* stroke width in px; 0 = none */
+	uint32_t outline_color;
+
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
 } text_element_t;
@@ -278,6 +306,9 @@ typedef struct {
 	int      align;
 	int      valign;
 	int      filter;
+	int      radius;          /* rounded-corner clip radius in px (0 = none) */
+	float    angle;           /* rotation around the centre, degrees (0 = none) */
+	uint32_t tint;            /* multiply tint; alpha = strength, 0 = none */
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
@@ -308,6 +339,94 @@ typedef struct {
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
 } rect_element_t;
+
+typedef struct {
+	int      active;
+	int      id;
+	int      cx, cy;          /* centre (negative = screen centre on that axis) */
+	int      rx, ry;          /* radii in px; ry <= 0 mirrors rx (a circle) */
+	int      thickness;       /* 0 = filled, >0 = outline ring width (px) */
+	uint32_t color;
+
+	float    opacity;         /* 0..1 master alpha */
+	anim_t   anim;            /* optional opacity animation */
+} ellipse_t;
+
+typedef struct {
+	int      active;
+	int      id;
+	int      x1, y1, x2, y2;  /* endpoints */
+	int      thickness;       /* line width in px (default 2) */
+	int      cap;             /* 0 = flat/butt ends, 1 = round */
+	uint32_t color;
+
+	float    opacity;         /* 0..1 master alpha */
+	anim_t   anim;            /* optional opacity animation */
+} line_t;
+
+/* A step / boot-stage indicator: a row of dots or pills, `current` of `count`
+ * shown "done". */
+typedef struct {
+	int      active;
+	int      id;
+	int      x, y;            /* row anchor (negative = screen centre) */
+	int      align, valign;   /* how x/y anchors the row */
+	int      count;           /* number of steps */
+	int      current;         /* steps marked done (0..count) */
+	int      style;           /* 0 = dots (circles), 1 = bars (pills) */
+	int      size;            /* dot radius / bar height in px */
+	int      length;          /* bar length (style 1); 0 = size*3 */
+	int      gap;             /* spacing between steps in px */
+	int      thickness;       /* "todo" steps: 0 = filled, >0 = outline width */
+	uint32_t color_done;
+	uint32_t color_todo;
+
+	float    opacity;         /* 0..1 master alpha */
+	anim_t   anim;            /* optional opacity animation */
+} stepper_t;
+
+/* A single line of text scrolling horizontally inside a clip box. */
+typedef struct {
+	int      active;
+	int      id;
+	int      x, y, w, h;      /* clip box (negative x/y = centre on that axis) */
+	char     text[256];
+	int      font_slot;
+	float    font_size;
+	uint32_t color;
+	int      speed;           /* px/sec; >0 scrolls left, <0 right, 0 = static */
+	int      gap;             /* gap between repetitions (px) */
+	float    offset;          /* scroll position, advanced by anim_tick */
+	uint64_t last_ms;         /* last scroll tick (for the time delta) */
+
+	float    opacity;         /* 0..1 master alpha */
+	anim_t   anim;            /* optional opacity animation */
+
+	/* Cached rasterised text coverage (perf): the marquee re-tiles the same
+	 * bitmap every frame while only `offset` changes, so the glyph coverage is
+	 * rasterised once and reused until text/font/size change (cov_dirty). */
+	uint8_t *cov_cache;
+	int      cov_cache_w, cov_cache_h;
+	int      cov_dirty;       /* 1 = (re)rasterise on the next draw */
+} marquee_t;
+
+/* A frame animation: cycles through a list of loaded images at a frame rate. */
+typedef struct {
+	int      active;
+	int      id;
+	int      x, y, w, h;      /* position + size (w/h <= 0 = native frame size) */
+	int      align, valign;
+	int      filter;          /* scaling filter (IMG_*) */
+	image_t  frames[MAX_SPRITE_FRAMES];
+	int      frame_count;
+	int      current;         /* current frame index */
+	int      fps;             /* frames per second (default 12) */
+	int      loop;            /* 1 = loop (default), 0 = play once, hold last */
+	uint64_t last_ms;         /* last frame-advance time */
+
+	float    opacity;         /* 0..1 master alpha */
+	anim_t   anim;            /* optional opacity animation */
+} sprite_t;
 
 typedef struct {
 	int      active;
@@ -378,6 +497,7 @@ typedef struct {
 	int      line_count;      /* lines currently stored (≤ max_lines) */
 	int      head;            /* next write index in lines[] */
 	char     lines[CONSOLE_MAX_LINES][CONSOLE_LINE_LEN];
+	uint32_t line_color[CONSOLE_MAX_LINES]; /* per-line override; 0 = use color */
 	float    opacity;
 	anim_t   anim;
 } console_t;
@@ -439,9 +559,15 @@ typedef struct {
 	int      bg_filter;          /* resample quality for the background */
 	uint32_t bg_color;
 
+	/* Steady-state cache of the resampled background (rebuilt only when the
+	 * image, dest size or filter changes), so a static bg under foreground
+	 * animation is not re-resampled every frame. */
+	image_t  bg_cache;
+	int      bg_cache_filter;
+	int      bg_cache_dirty;
+
 	/* Background crossfade: the outgoing image and the fade animation */
 	image_t  bg_prev;
-	int      bg_prev_loaded;
 	int      bg_prev_scale_mode;
 	float    bg_prev_custom_scale;
 	int      bg_prev_filter;
@@ -453,6 +579,11 @@ typedef struct {
 	text_element_t  texts[MAX_TEXT_ELEMENTS];
 	image_overlay_t overlays[MAX_IMAGE_OVERLAYS];
 	rect_element_t  rects[MAX_RECTANGLES];
+	ellipse_t       ellipses[MAX_ELLIPSES];
+	line_t          lines[MAX_LINES];
+	stepper_t       steppers[MAX_STEPPERS];
+	marquee_t       marquees[MAX_MARQUEES];
+	sprite_t        sprites[MAX_SPRITES];
 	progress_bar_t  bars[MAX_PROGRESS_BARS];
 	spinner_t       spinners[MAX_SPINNERS];
 	console_t       consoles[MAX_CONSOLES];
@@ -471,8 +602,6 @@ typedef struct {
 	int      needs_render;
 	int      ready;
 	int      frozen;
-	int      quiet;
-	int      debug;
 
 	uint64_t last_activity_ms;   /* monotonic time of the last command */
 	uint32_t watchdog_ms;        /* idle timeout, 0 = disabled */
@@ -487,7 +616,7 @@ typedef struct {
  * ======================================================================== */
 
 /* drm.c */
-int  drm_init(splash_drm_t *ctx, const char *device);
+int  drm_init(splash_drm_t *ctx, const char *device, int headless);
 void drm_cleanup(splash_drm_t *ctx);
 void drm_flip(splash_drm_t *ctx);
 
@@ -522,6 +651,11 @@ void draw_qr_element(drm_buffer_t *buf, qr_element_t *qr);
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb);
 void draw_arc_bar(drm_buffer_t *buf, arc_bar_t *ab, uint64_t now);
 void draw_rect_element(drm_buffer_t *buf, rect_element_t *re);
+void draw_ellipse(drm_buffer_t *buf, ellipse_t *e);
+void draw_line(drm_buffer_t *buf, line_t *l);
+void draw_stepper(drm_buffer_t *buf, stepper_t *s);
+void draw_marquee(drm_buffer_t *buf, marquee_t *m);
+void draw_sprite(drm_buffer_t *buf, sprite_t *sp);
 void draw_spinner(drm_buffer_t *buf, spinner_t *sp, uint64_t now);
 void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
                            int mode, float custom_scale,
@@ -531,7 +665,8 @@ void calculate_scaled_rect(int buf_w, int buf_h, int img_w, int img_h,
 int    handle_json_command(splash_state_t *st, const char *json_str,
                             int client_idx);
 cJSON *create_response(const char *status, const char *message);
-int    process_json_batch(splash_state_t *st, cJSON *root, int client_idx);
+int    process_json_batch(splash_state_t *st, cJSON *root, int client_idx,
+                          int *out_total, int *out_errors);
 
 /* socket.c */
 int  socket_init(splash_state_t *st);
@@ -547,11 +682,24 @@ image_overlay_t *overlay_find(splash_state_t *st, int id);
 image_overlay_t *overlay_alloc(splash_state_t *st);
 rect_element_t  *rect_find(splash_state_t *st, int id);
 rect_element_t  *rect_alloc(splash_state_t *st);
+ellipse_t       *ellipse_find(splash_state_t *st, int id);
+ellipse_t       *ellipse_alloc(splash_state_t *st);
+line_t          *line_find(splash_state_t *st, int id);
+line_t          *line_alloc(splash_state_t *st);
+stepper_t       *stepper_find(splash_state_t *st, int id);
+stepper_t       *stepper_alloc(splash_state_t *st);
+marquee_t       *marquee_find(splash_state_t *st, int id);
+marquee_t       *marquee_alloc(splash_state_t *st);
+void             marquee_free_cache(marquee_t *m);
+sprite_t        *sprite_find(splash_state_t *st, int id);
+sprite_t        *sprite_alloc(splash_state_t *st);
+void             sprite_clear_frames(sprite_t *sp);
 spinner_t       *spinner_find(splash_state_t *st, int id);
 spinner_t       *spinner_alloc(splash_state_t *st);
 console_t       *console_find(splash_state_t *st, int id);
 console_t       *console_alloc(splash_state_t *st);
 progress_bar_t  *progress_find(splash_state_t *st, int id);
+progress_bar_t  *progress_alloc(splash_state_t *st);
 arc_bar_t       *arc_find(splash_state_t *st, int id);
 arc_bar_t       *arc_alloc(splash_state_t *st);
 qr_element_t    *qr_find(splash_state_t *st, int id);
@@ -571,9 +719,15 @@ void kbd_init(splash_state_t *st);
 void kbd_cleanup(splash_state_t *st);
 void kbd_process(splash_state_t *st);
 
+/* When non-zero (--check), load_image()/font_load() validate command structure
+ * but skip the actual filesystem load, so a boot config can be checked on a
+ * build host where the referenced assets are not present. Defined in main.c. */
+extern int g_validate_only;
+
 /* main.c helpers */
-int load_config(splash_state_t *st, const char *config_str);
-int process_startup_cmds(splash_state_t *st, const char *cmds_str);
+int load_config(const char *config_str);
+int process_startup_cmds(splash_state_t *st, const char *cmds_str,
+                         int *out_total, int *out_errors);
 
 /* usage.c - shared between splash-drm and splash-ctl */
 void print_cmd_help(const char *cmd);

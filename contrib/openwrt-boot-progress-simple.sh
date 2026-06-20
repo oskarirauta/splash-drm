@@ -1,19 +1,25 @@
 #!/bin/sh
 #
-# openwrt-boot-progress.sh — drive splash-drm arc progress from OpenWrt init
+# openwrt-boot-progress-simple.sh — MANUAL splash-drm boot progress for OpenWrt
+#
+# This is the explicit, call-it-yourself companion: source it and then invoke
+# splash_progress_done / splash_status_text / splash_boot_done from your init
+# scripts. You get full control over *when* progress advances and *what* text
+# is shown. If you'd rather have every boot script report automatically with no
+# per-service edits, use the sibling script instead:
+#
+#     openwrt-boot-progress-auto.sh
 #
 # HOW TO INTEGRATE
 # ----------------
 # Source this file near the top of /etc/rc.common (before the action functions)
-# so that every init script that sources rc.common automatically reports its
-# progress to the splash daemon:
+# so the helper functions below are available to every init script:
 #
-#   [ -f /usr/share/splash/openwrt-boot-progress.sh ] && \
-#       . /usr/share/splash/openwrt-boot-progress.sh
+#   [ -f /usr/share/splash/openwrt-boot-progress-simple.sh ] && \
+#       . /usr/share/splash/openwrt-boot-progress-simple.sh
 #
 # Then call splash_progress_done once per service near the end of the start()
-# or boot() action, or patch rc.common's global start wrapper to do so
-# automatically (see the note at the bottom of this file).
+# or boot() action.
 #
 # REQUIREMENTS
 # ------------
@@ -101,20 +107,10 @@ splash_boot_done() {
 }
 
 # --------------------------------------------------------------------------
-# AUTOMATIC PATCH FOR /etc/rc.common
+# WANT THIS AUTOMATICALLY (no per-service calls)?
 # --------------------------------------------------------------------------
-# Instead of calling splash_progress_done() manually in each service, you
-# can wrap the global start function in rc.common. Add this block at the end
-# of /etc/rc.common, after the existing action() and start_service() helpers:
-#
-#   if [ -f /usr/share/splash/openwrt-boot-progress.sh ]; then
-#       . /usr/share/splash/openwrt-boot-progress.sh
-#       _orig_start=$(declare -f start 2>/dev/null || true)
-#       start() {
-#           eval "${_orig_start#start()}"
-#           splash_progress_done "$INIT_SCRIPT"
-#       }
-#   fi
-#
-# This patches the global start() so every service that uses the standard
-# rc.common flow reports progress automatically, with no per-script changes.
+# The sibling script openwrt-boot-progress-auto.sh does exactly that: source it
+# once, immediately after rc.common's `shift 2`, and every /etc/rc.d/S* boot
+# script reports its own progress and a "starting <svc>" log line — with no
+# splash_progress_done() calls anywhere. Use this simple script instead when
+# you want to choose the moments and messages yourself.

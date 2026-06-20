@@ -355,14 +355,16 @@ void draw_spinner(drm_buffer_t *buf, spinner_t *sp, uint64_t now) {
 		float scx = cx + ca * mid_r;		/* spoke centre */
 		float scy = cy + sa * mid_r;
 
-		/* Axis-aligned bounding box of this rotated capsule.
-		 * The worst-case half-extent for any rotation is half_len + half_w
-		 * (achieved at 45°); using just max(half_len, half_w) clips tips. */
-		float ex = half_len + half_w;
+		/* Axis-aligned bounding box of this rotated capsule: the exact rotated
+		 * half-extents (+1px for the AA edge) instead of the loose 45° worst
+		 * case half_len+half_w, so far fewer pixels are SDF-tested per spoke. */
+		float aca = fabsf(ca), asa = fabsf(sa);
+		float ex = half_len * aca + half_w * asa + 1.0f;
+		float ey = half_len * asa + half_w * aca + 1.0f;
 		int x0 = clamp((int)floorf(scx - ex), 0, (int)buf->width);
-		int y0 = clamp((int)floorf(scy - ex), 0, (int)buf->height);
+		int y0 = clamp((int)floorf(scy - ey), 0, (int)buf->height);
 		int x1 = clamp((int)ceilf(scx + ex),  0, (int)buf->width);
-		int y1 = clamp((int)ceilf(scy + ex),  0, (int)buf->height);
+		int y1 = clamp((int)ceilf(scy + ey),  0, (int)buf->height);
 
 		for (int py = y0; py < y1; py++) {
 			uint32_t *line =
@@ -426,6 +428,110 @@ static float kernel_radius(int filter) {
 	case IMG_LANCZOS:
 	default:
 		return 3.0f;
+	}
+}
+
+/* Bilinear sample of an RGBA source at (fx,fy), returned as straight ARGB. */
+static uint32_t sample_bilinear(const uint8_t *rgba, int iw, int ih,
+                                float fx, float fy) {
+	fx -= 0.5f;
+	fy -= 0.5f;
+	int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
+	int x1 = x0 + 1, y1 = y0 + 1;
+	float tx = fx - (float)x0, ty = fy - (float)y0;
+	x0 = clamp(x0, 0, iw - 1);
+	x1 = clamp(x1, 0, iw - 1);
+	y0 = clamp(y0, 0, ih - 1);
+	y1 = clamp(y1, 0, ih - 1);
+	const uint8_t *p00 = rgba + ((size_t)y0 * iw + x0) * 4;
+	const uint8_t *p10 = rgba + ((size_t)y0 * iw + x1) * 4;
+	const uint8_t *p01 = rgba + ((size_t)y1 * iw + x0) * 4;
+	const uint8_t *p11 = rgba + ((size_t)y1 * iw + x1) * 4;
+	float w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty);
+	float w01 = (1 - tx) * ty,       w11 = tx * ty;
+	uint8_t o[4];
+	for (int c = 0; c < 4; c++)
+		o[c] = (uint8_t)(p00[c]*w00 + p10[c]*w10 + p01[c]*w01 + p11[c]*w11 + 0.5f);
+	return argb(o[3], o[0], o[1], o[2]);
+}
+
+/* Coverage (0..1, 1px AA) of a point in element space [0,w]x[0,h] inside a
+ * rounded rectangle with corner radius r. Standard rounded-box SDF. */
+static float rrect_coverage(float px, float py, float w, float h, float r) {
+	float hw = w * 0.5f, hh = h * 0.5f;
+	if (r > hw) r = hw;
+	if (r > hh) r = hh;
+	float qx = fabsf(px - hw) - (hw - r);
+	float qy = fabsf(py - hh) - (hh - r);
+	float ox = qx > 0.0f ? qx : 0.0f, oy = qy > 0.0f ? qy : 0.0f;
+	float d  = sqrtf(ox * ox + oy * oy) + fminf(fmaxf(qx, qy), 0.0f) - r;
+	return fclamp(0.5f - d, 0.0f, 1.0f);
+}
+
+/*
+ * Draw an image into (dx,dy,dw,dh) with optional rotation about its centre, a
+ * rounded-corner clip, and a multiply tint, via inverse mapping + bilinear
+ * sampling. Used for overlays that set angle/radius/tint; the plain case still
+ * goes through draw_image() (which has the nicer resampling kernels).
+ */
+static void draw_image_ex(drm_buffer_t *buf, int dx, int dy, int dw, int dh,
+                          const uint8_t *rgba, int iw, int ih,
+                          float opacity, float angle_deg, int radius,
+                          uint32_t tint) {
+	if (dw <= 0 || dh <= 0 || iw <= 0 || ih <= 0 || opacity <= 0.0f)
+		return;
+
+	float cx = (float)dx + (float)dw * 0.5f;
+	float cy = (float)dy + (float)dh * 0.5f;
+	float hw = (float)dw * 0.5f, hh = (float)dh * 0.5f;
+	float ang = angle_deg * (float)M_PI / 180.0f;
+	float ca = cosf(ang), sa = sinf(ang);
+
+	float ex = fabsf(hw * ca) + fabsf(hh * sa);   /* rotated-rect half-extents */
+	float ey = fabsf(hw * sa) + fabsf(hh * ca);
+	int x0 = clamp((int)floorf(cx - ex) - 1, 0, (int)buf->width);
+	int x1 = clamp((int)ceilf (cx + ex) + 1, 0, (int)buf->width);
+	int y0 = clamp((int)floorf(cy - ey) - 1, 0, (int)buf->height);
+	int y1 = clamp((int)ceilf (cy + ey) + 1, 0, (int)buf->height);
+
+	int   has_tint = (tint >> 24) > 0;
+	float tstr = has_tint ? (float)(tint >> 24) / 255.0f : 0.0f;
+	int   tr = (tint >> 16) & 0xFF, tg = (tint >> 8) & 0xFF, tb = tint & 0xFF;
+
+	for (int py = y0; py < y1; py++) {
+		uint32_t *dst = (uint32_t *)(buf->map + (size_t)py * buf->pitch) + x0;
+		for (int px = x0; px < x1; px++, dst++) {
+			float rx = ((float)px + 0.5f) - cx;
+			float ry = ((float)py + 0.5f) - cy;
+			float ux =  rx * ca + ry * sa + hw;   /* inverse-rotate -> element */
+			float uy = -rx * sa + ry * ca + hh;
+			if (ux < 0.0f || ux >= (float)dw || uy < 0.0f || uy >= (float)dh)
+				continue;
+
+			float cov = 1.0f;
+			if (radius > 0) {
+				cov = rrect_coverage(ux, uy, (float)dw, (float)dh, (float)radius);
+				if (cov <= 0.0f)
+					continue;
+			}
+
+			uint32_t s = sample_bilinear(rgba, iw, ih,
+			                             ux / (float)dw * (float)iw,
+			                             uy / (float)dh * (float)ih);
+			uint8_t salpha = s >> 24;
+			if (salpha == 0)
+				continue;
+			int sr = (s >> 16) & 0xFF, sg = (s >> 8) & 0xFF, sb = s & 0xFF;
+			if (has_tint) {
+				sr += (int)(((float)(sr * tr / 255) - (float)sr) * tstr);
+				sg += (int)(((float)(sg * tg / 255) - (float)sg) * tstr);
+				sb += (int)(((float)(sb * tb / 255) - (float)sb) * tstr);
+			}
+			float a = (float)salpha * opacity * cov;
+			uint32_t src = ((uint32_t)(a + 0.5f) << 24) | ((uint32_t)sr << 16) |
+			               ((uint32_t)sg << 8) | (uint32_t)sb;
+			blend_pixel(dst, src);
+		}
 	}
 }
 
@@ -530,6 +636,69 @@ void draw_image(drm_buffer_t *buf, int x, int y, int w, int h,
 			int al = clamp((int)(oa + 0.5f),     0, 255);
 			blend_pixel(dst, argb((uint8_t)al, (uint8_t)rr,
 			                      (uint8_t)gg, (uint8_t)bb));
+		}
+	}
+}
+
+/*
+ * Resample src (iw x ih) into the straight-RGBA buffer `out` (dw x dh) using
+ * exactly draw_image()'s kernel and rounding at opacity 1 - pixels draw_image
+ * would drop (resampled alpha < 0.5) are written fully transparent. This lets a
+ * static background be resampled once and then blitted 1:1 with IMG_NEAREST
+ * every frame (bit-identical to the live path) instead of re-resampled.
+ */
+static void resample_image_to(uint8_t *out, int dw, int dh,
+                              const uint8_t *rgba, int iw, int ih, int filter) {
+	float sx = (float)iw / (float)dw;
+	float sy = (float)ih / (float)dh;
+	float supx = sx > 1.0f ? sx : 1.0f;
+	float supy = sy > 1.0f ? sy : 1.0f;
+	float base_r = kernel_radius(filter);
+	float radx = base_r * supx, rady = base_r * supy;
+	float inv_supx = 1.0f / supx, inv_supy = 1.0f / supy;
+
+	for (int row = 0; row < dh; row++) {
+		float cy = ((float)row + 0.5f) * sy - 0.5f;
+		int iy0 = (int)floorf(cy - rady);
+		int iy1 = (int)ceilf(cy + rady);
+		uint8_t *orow = out + (size_t)row * dw * 4;
+
+		for (int col = 0; col < dw; col++) {
+			float cx = ((float)col + 0.5f) * sx - 0.5f;
+			int ix0 = (int)floorf(cx - radx);
+			int ix1 = (int)ceilf(cx + radx);
+
+			float ar = 0.0f, ag = 0.0f, ab = 0.0f, aa = 0.0f, ws = 0.0f;
+			for (int iy = iy0; iy <= iy1; iy++) {
+				float wy = kernel_weight((iy - cy) * inv_supy, filter);
+				if (wy == 0.0f)
+					continue;
+				const uint8_t *srow = rgba + clamp(iy, 0, ih - 1) * iw * 4;
+				for (int ix = ix0; ix <= ix1; ix++) {
+					float wx = kernel_weight((ix - cx) * inv_supx, filter);
+					float wgt = wx * wy;
+					if (wgt == 0.0f)
+						continue;
+					const uint8_t *p = srow + clamp(ix, 0, iw - 1) * 4;
+					float pa = p[3] * (1.0f / 255.0f);
+					ar += p[0] * pa * wgt;
+					ag += p[1] * pa * wgt;
+					ab += p[2] * pa * wgt;
+					aa += p[3] * wgt;
+					ws += wgt;
+				}
+			}
+			uint8_t *o = orow + (size_t)col * 4;
+			float oa = (ws > 0.0f && aa > 0.0f) ? aa / ws : 0.0f;
+			if (oa < 0.5f) {			/* draw_image drops these */
+				o[0] = o[1] = o[2] = o[3] = 0;
+				continue;
+			}
+			float k = 255.0f / aa;
+			o[0] = (uint8_t)clamp((int)(ar * k + 0.5f), 0, 255);
+			o[1] = (uint8_t)clamp((int)(ag * k + 0.5f), 0, 255);
+			o[2] = (uint8_t)clamp((int)(ab * k + 0.5f), 0, 255);
+			o[3] = (uint8_t)clamp((int)(oa + 0.5f),     0, 255);
 		}
 	}
 }
@@ -644,6 +813,30 @@ void draw_round_rect_sweep(drm_buffer_t *buf, float x, float y,
 	}
 }
 
+/* Draw a centred "NN%" label for `value` (0..1) at (cx, cy). Shared by the
+ * progress-bar and arc renderers; each caller resolves its own font slot/size
+ * and centre, so the rounding (+0.5) stays identical between the two. */
+static void draw_centered_percent(drm_buffer_t *buf, float value,
+                                  int cx, int cy, int font_slot,
+                                  float font_size, uint32_t color,
+                                  float opacity) {
+	text_element_t te = {0};
+	te.active    = 1;
+	te.opacity   = opacity;
+	/* Clamp before the float->int cast: an out-of-range client value
+	 * (e.g. 1e30) would make (int)(value*100) undefined behaviour. */
+	snprintf(te.text, sizeof(te.text), "%d%%",
+	         (int)(fclamp(value, 0.0f, 1.0f) * 100.0f + 0.5f));
+	te.x         = cx;
+	te.y         = cy;
+	te.align     = ALIGN_CENTER;
+	te.valign    = VALIGN_MIDDLE;
+	te.color     = color;
+	te.font_slot = font_slot;
+	te.font_size = font_size;
+	draw_text_element(buf, &te);
+}
+
 void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 	float op = pb->opacity;
 	if (op <= 0.0f)
@@ -651,8 +844,8 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 
 	/* Resolve the top-left corner from the anchor + alignment. A negative
 	 * x or y anchors to the screen centre on that axis. */
-	int anchor_x = (pb->x < 0) ? (int)buf->width  / 2 : pb->x;
-	int anchor_y = (pb->y < 0) ? (int)buf->height / 2 : pb->y;
+	int anchor_x = resolve_anchor(pb->x, (int)buf->width);
+	int anchor_y = resolve_anchor(pb->y, (int)buf->height);
 	int x = anchor_x, y = anchor_y;
 	if      (pb->align == ALIGN_CENTER) x -= pb->w / 2;
 	else if (pb->align == ALIGN_RIGHT)  x -= pb->w;
@@ -720,22 +913,11 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 
 	/* 4. Percentage text (only meaningful for a determinate bar). */
 	if (!pb->indeterminate && pb->show_percent && pb->value > 0.0f) {
-		char percent_str[8];
-		snprintf(percent_str, sizeof(percent_str), "%d%%",
-		         (int)(pb->value * 100));
-
-		text_element_t te = {0};
-		te.active    = 1;
-		te.opacity   = op;
-		strncpy(te.text, percent_str, sizeof(te.text) - 1);
-		te.x         = x + pb->w / 2;
-		te.y         = y + pb->h / 2;
-		te.align     = ALIGN_CENTER;
-		te.valign    = VALIGN_MIDDLE;
-		te.color     = pb->text_color;
-		te.font_slot = pb->font_slot > 0 ? pb->font_slot : 0;
-		te.font_size = pb->font_size > 0 ? pb->font_size : 0;
-		draw_text_element(buf, &te);
+		draw_centered_percent(buf, pb->value,
+		                      x + pb->w / 2, y + pb->h / 2,
+		                      pb->font_slot > 0 ? pb->font_slot : 0,
+		                      pb->font_size > 0 ? pb->font_size : 0,
+		                      pb->text_color, op);
 	}
 }
 
@@ -752,8 +934,8 @@ void draw_rect_element(drm_buffer_t *buf, rect_element_t *re) {
 
 	/* Resolve the top-left corner from the anchor + alignment. A negative
 	 * x or y anchors to the screen centre on that axis. */
-	int anchor_x = (re->x < 0) ? (int)buf->width  / 2 : re->x;
-	int anchor_y = (re->y < 0) ? (int)buf->height / 2 : re->y;
+	int anchor_x = resolve_anchor(re->x, (int)buf->width);
+	int anchor_y = resolve_anchor(re->y, (int)buf->height);
 	int rx = anchor_x, ry = anchor_y;
 	if      (re->align == ALIGN_CENTER) rx -= re->w / 2;
 	else if (re->align == ALIGN_RIGHT)  rx -= re->w;
@@ -818,6 +1000,227 @@ static float arc_pixel_alpha(float ring_alpha, float dist,
 	return ring_alpha * ea * eb;
 }
 
+/*
+ * Filled or outlined ellipse / circle with anti-aliased edges. The boundary is
+ * (dx/rx)^2 + (dy/ry)^2 = 1; we approximate the signed pixel distance to it for
+ * a 1px AA band (exact for circles, close enough for ellipses). thickness > 0
+ * draws an outline ring of that width just inside the boundary; a negative
+ * centre on an axis means "screen centre".
+ */
+void draw_ellipse(drm_buffer_t *buf, ellipse_t *e) {
+	if (!e->active || e->opacity <= 0.0f)
+		return;
+
+	float rx = (float)e->rx;
+	float ry = (float)(e->ry > 0 ? e->ry : e->rx);
+	if (rx < 0.5f || ry < 0.5f)
+		return;
+
+	int   icx = resolve_anchor(e->cx, (int)buf->width);
+	int   icy = resolve_anchor(e->cy, (int)buf->height);
+	float cx  = (float)icx + 0.5f;
+	float cy  = (float)icy + 0.5f;
+	float t   = (float)e->thickness;
+	int   filled = (t <= 0.0f);
+
+	int x0 = clamp((int)floorf(cx - rx) - 1, 0, (int)buf->width);
+	int x1 = clamp((int)ceilf (cx + rx) + 1, 0, (int)buf->width);
+	int y0 = clamp((int)floorf(cy - ry) - 1, 0, (int)buf->height);
+	int y1 = clamp((int)ceilf (cy + ry) + 1, 0, (int)buf->height);
+
+	uint32_t base   = apply_opacity(e->color, e->opacity);
+	uint8_t  base_a = base >> 24;
+	if (base_a == 0)
+		return;
+
+	for (int py = y0; py < y1; py++) {
+		uint32_t *dst = (uint32_t *)(buf->map + (size_t)py * buf->pitch) + x0;
+		float dy = (float)py - cy;
+		for (int px = x0; px < x1; px++, dst++) {
+			float dx = (float)px - cx;
+			float nx = dx / rx, ny = dy / ry;
+			float f  = nx * nx + ny * ny;
+			float sf = sqrtf(f);
+			/* |grad(sqrt f)| converts the implicit value to a pixel distance. */
+			float gx = nx / rx, gy = ny / ry;
+			float gmag = sqrtf(gx * gx + gy * gy);
+			if (gmag < 1e-6f)
+				gmag = 1e-6f;
+			float d = (sf - 1.0f) / gmag;          /* signed px dist, <0 inside */
+
+			float cov;
+			if (filled) {
+				cov = fclamp(0.5f - d, 0.0f, 1.0f);
+			} else {
+				float outer = fclamp(0.5f - d, 0.0f, 1.0f);      /* inside boundary */
+				float inner = fclamp(d + t + 0.5f, 0.0f, 1.0f);  /* outside inner edge */
+				cov = outer * inner;
+			}
+			if (cov <= 0.0f)
+				continue;
+
+			uint32_t c = base;
+			if (cov < 1.0f) {
+				uint8_t a = (uint8_t)((float)base_a * cov + 0.5f);
+				c = (base & 0x00FFFFFFu) | ((uint32_t)a << 24);
+			}
+			blend_pixel(dst, c);
+		}
+	}
+}
+
+/*
+ * Anti-aliased thick line between two endpoints. cap 0 = flat/butt ends
+ * (clipped to the segment, the natural look for a divider), cap 1 = round
+ * (a capsule). Coverage comes from the perpendicular distance to the segment.
+ */
+void draw_line(drm_buffer_t *buf, line_t *l) {
+	if (!l->active || l->opacity <= 0.0f)
+		return;
+
+	float ax = (float)l->x1 + 0.5f, ay = (float)l->y1 + 0.5f;
+	float bx = (float)l->x2 + 0.5f, by = (float)l->y2 + 0.5f;
+	float hw = (float)(l->thickness > 0 ? l->thickness : 2) * 0.5f;
+	float abx = bx - ax, aby = by - ay;
+	float len2 = abx * abx + aby * aby;
+	float len  = sqrtf(len2);
+	int   round = (l->cap == 1);
+
+	int x0 = clamp((int)floorf(fminf(ax, bx) - hw) - 1, 0, (int)buf->width);
+	int x1 = clamp((int)ceilf (fmaxf(ax, bx) + hw) + 1, 0, (int)buf->width);
+	int y0 = clamp((int)floorf(fminf(ay, by) - hw) - 1, 0, (int)buf->height);
+	int y1 = clamp((int)ceilf (fmaxf(ay, by) + hw) + 1, 0, (int)buf->height);
+
+	uint32_t base   = apply_opacity(l->color, l->opacity);
+	uint8_t  base_a = base >> 24;
+	if (base_a == 0)
+		return;
+
+	for (int py = y0; py < y1; py++) {
+		uint32_t *dst = (uint32_t *)(buf->map + (size_t)py * buf->pitch) + x0;
+		float pay = ((float)py + 0.5f) - ay;
+		for (int px = x0; px < x1; px++, dst++) {
+			float pax = ((float)px + 0.5f) - ax;
+			float t = (len2 > 1e-6f) ? (pax * abx + pay * aby) / len2 : 0.0f;
+
+			float cov;
+			if (round) {
+				float tc = fclamp(t, 0.0f, 1.0f);
+				float dx = pax - tc * abx, dy = pay - tc * aby;
+				cov = fclamp(hw + 0.5f - sqrtf(dx * dx + dy * dy), 0.0f, 1.0f);
+			} else {
+				float dx = pax - t * abx, dy = pay - t * aby;   /* perpendicular */
+				float cov_perp =
+				    fclamp(hw + 0.5f - sqrtf(dx * dx + dy * dy), 0.0f, 1.0f);
+				float along = t * len;                          /* px from end a */
+				float e0 = fclamp(along + 0.5f, 0.0f, 1.0f);
+				float e1 = fclamp((len - along) + 0.5f, 0.0f, 1.0f);
+				cov = cov_perp * e0 * e1;
+			}
+			if (cov <= 0.0f)
+				continue;
+
+			uint32_t c = base;
+			if (cov < 1.0f) {
+				uint8_t a = (uint8_t)((float)base_a * cov + 0.5f);
+				c = (base & 0x00FFFFFFu) | ((uint32_t)a << 24);
+			}
+			blend_pixel(dst, c);
+		}
+	}
+}
+
+/*
+ * Step / boot-stage indicator: a centred row of `count` dots (or pills), the
+ * first `current` drawn in color_done and the rest in color_todo. Composes the
+ * ellipse and rounded-rect primitives rather than rasterising directly.
+ */
+void draw_stepper(drm_buffer_t *buf, stepper_t *s) {
+	if (!s->active || s->opacity <= 0.0f || s->count <= 0)
+		return;
+
+	float op   = fclamp(s->opacity, 0.0f, 1.0f);
+	int   dots = (s->style != 1);
+	int   size = s->size > 0 ? s->size : 12;
+	int   gap  = s->gap  > 0 ? s->gap  : size + 4;
+	int   step_w = dots ? size * 2 : (s->length > 0 ? s->length : size * 3);
+	int   step_h = dots ? size * 2 : size;
+	int   n      = s->count;
+	int   total_w = n * step_w + (n - 1) * gap;
+
+	int ax = (s->x < 0) ? (int)buf->width  / 2 : s->x;
+	int ay = (s->y < 0) ? (int)buf->height / 2 : s->y;
+	int left = ax;
+	if (s->align == ALIGN_CENTER)        left = ax - total_w / 2;
+	else if (s->align == ALIGN_RIGHT)    left = ax - total_w;
+	int top = ay;
+	if (s->valign == VALIGN_MIDDLE)      top = ay - step_h / 2;
+	else if (s->valign == VALIGN_BOTTOM) top = ay - step_h;
+
+	for (int i = 0; i < n; i++) {
+		int      done = (i < s->current);
+		uint32_t col  = done ? s->color_done : s->color_todo;
+		int      x    = left + i * (step_w + gap);
+
+		if (dots) {
+			ellipse_t e;
+			memset(&e, 0, sizeof(e));
+			e.active    = 1;
+			e.opacity   = op;
+			e.cx        = x + size;
+			e.cy        = top + size;
+			e.rx        = size;
+			e.ry        = size;
+			e.thickness = done ? 0 : s->thickness;
+			e.color     = col;
+			draw_ellipse(buf, &e);
+		} else {
+			float radius = (float)step_h / 2.0f;
+			if (!done && s->thickness > 0) {
+				draw_round_rect_outline(buf, (float)x, (float)top,
+				                        (float)step_w, (float)step_h,
+				                        radius, (float)s->thickness,
+				                        apply_opacity(col, op));
+			} else {
+				paint_t p = { apply_opacity(col, op), 0, GRAD_NONE };
+				draw_round_rect(buf, (float)x, (float)top,
+				                (float)step_w, (float)step_h, radius, &p);
+			}
+		}
+	}
+}
+
+/* Draw the current frame of a sprite animation, scaled like an overlay. */
+void draw_sprite(drm_buffer_t *buf, sprite_t *sp) {
+	if (!sp->active || sp->opacity <= 0.0f || sp->frame_count <= 0)
+		return;
+
+	int idx = sp->current;
+	if (idx < 0)                 idx = 0;
+	if (idx >= sp->frame_count)  idx = sp->frame_count - 1;
+	image_t *fr = &sp->frames[idx];
+	if (!fr->rgba || fr->w <= 0 || fr->h <= 0)
+		return;
+
+	int w = sp->w, h = sp->h;
+	if (w <= 0 && h <= 0) { w = fr->w; h = fr->h; }
+	else if (h <= 0)        h = (int)((long)w * fr->h / fr->w);
+	else if (w <= 0)        w = (int)((long)h * fr->w / fr->h);
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+
+	int ax = (sp->x < 0) ? (int)buf->width  / 2 : sp->x;
+	int ay = (sp->y < 0) ? (int)buf->height / 2 : sp->y;
+	int x = ax, y = ay;
+	if      (sp->align == ALIGN_CENTER) x -= w / 2;
+	else if (sp->align == ALIGN_RIGHT)  x -= w;
+	if      (sp->valign == VALIGN_MIDDLE) y -= h / 2;
+	else if (sp->valign == VALIGN_BOTTOM) y -= h;
+
+	draw_image(buf, x, y, w, h, fr->rgba, fr->w, fr->h,
+	           sp->filter, sp->opacity);
+}
+
 void draw_arc_bar(drm_buffer_t *buf, arc_bar_t *ab, uint64_t now) {
 	float op = fclamp(ab->opacity, 0.0f, 1.0f);
 	if (op <= 0.0f || ab->radius <= 0)
@@ -857,63 +1260,51 @@ void draw_arc_bar(drm_buffer_t *buf, arc_bar_t *ab, uint64_t now) {
 	int x1 = clamp(cx + R + 2, 0, (int)buf->width);
 	int y1 = clamp(cy + R + 2, 0, (int)buf->height);
 
-	/* Pass 1: background arc */
-	if (has_bg) {
+	/* Background and fill share the ring SDF and the pixel angle, so compute
+	 * `dist` and the atan2 once per pixel and apply both (background first,
+	 * then fill on top) - identical output to two passes, half the sqrt/atan2. */
+	if (has_bg || has_fill) {
+		int gradient = (ab->bar_gradient != GRAD_NONE) &&
+		               ((ab->bar_color2 >> 24) > 0);
 		for (int py = y0; py < y1; py++) {
 			uint32_t *row = (uint32_t *)(buf->map + py * buf->pitch);
 			for (int px = x0; px < x1; px++) {
 				float dx   = (float)px - cx + 0.5f;
 				float dy   = (float)py - cy + 0.5f;
 				float dist = sqrtf(dx*dx + dy*dy);
-				float ring = fclamp(0.5f - (fabsf(dist - mid_r) - half_t), 0.0f, 1.0f);
+				float ring = fclamp(0.5f - (fabsf(dist - mid_r) - half_t),
+				                    0.0f, 1.0f);
 				if (ring <= 0.0f) continue;
 
-				float ang = fmodf(atan2f(dy, dx) - start_rad, 2.0f*(float)M_PI);
-				if (ang < 0.0f) ang += 2.0f*(float)M_PI;
+				float theta = atan2f(dy, dx);
 
-				float a = arc_pixel_alpha(ring, dist, ang, sweep_rad);
-				if (a <= 0.0f) continue;
-				blend_pixel(&row[px], apply_opacity(ab->bg_color, a * op));
-			}
-		}
-	}
-
-	/* Pass 2: filled arc */
-	if (has_fill) {
-		int gradient = (ab->bar_gradient != GRAD_NONE) && ((ab->bar_color2 >> 24) > 0);
-		for (int py = y0; py < y1; py++) {
-			uint32_t *row = (uint32_t *)(buf->map + py * buf->pitch);
-			for (int px = x0; px < x1; px++) {
-				float dx   = (float)px - cx + 0.5f;
-				float dy   = (float)py - cy + 0.5f;
-				float dist = sqrtf(dx*dx + dy*dy);
-				float ring = fclamp(0.5f - (fabsf(dist - mid_r) - half_t), 0.0f, 1.0f);
-				if (ring <= 0.0f) continue;
-
-				float ang = fmodf(atan2f(dy, dx) - fill_start_rad, 2.0f*(float)M_PI);
-				if (ang < 0.0f) ang += 2.0f*(float)M_PI;
-
-				/* For indeterminate, the fill arc can wrap past the sweep boundary
-				 * and must also stay within the total sweep. */
-				float a;
-				if (ab->indeterminate) {
-					a = arc_pixel_alpha(ring, dist, ang, fill_rad);
-				} else {
-					/* Non-indeterminate: fill always starts at arc start, so
-					 * ang is the same offset from both start_rad and fill_start_rad.
-					 * Clamp to sweep_rad as well. */
-					float ang_from_start = ang; /* fill_start_rad == start_rad */
-					a = arc_pixel_alpha(ring, dist,
-					                    ang_from_start,
-					                    fclamp(fill_rad, 0.0f, sweep_rad));
+				if (has_bg) {
+					float ang = fmodf(theta - start_rad, 2.0f*(float)M_PI);
+					if (ang < 0.0f) ang += 2.0f*(float)M_PI;
+					float a = arc_pixel_alpha(ring, dist, ang, sweep_rad);
+					if (a > 0.0f)
+						blend_pixel(&row[px],
+						            apply_opacity(ab->bg_color, a * op));
 				}
-				if (a <= 0.0f) continue;
 
-				uint32_t c = gradient
-				             ? lerp_color(ab->bar_color, ab->bar_color2,
-				                         fclamp(ang / fill_rad, 0.0f, 1.0f))
-				             : ab->bar_color;
-				blend_pixel(&row[px], apply_opacity(c, a * op));
+				if (has_fill) {
+					float ang = fmodf(theta - fill_start_rad, 2.0f*(float)M_PI);
+					if (ang < 0.0f) ang += 2.0f*(float)M_PI;
+					/* Indeterminate fill can wrap past the sweep boundary;
+					 * otherwise the fill starts at the arc start so `ang` is
+					 * the same offset, clamped to the sweep. */
+					float a = ab->indeterminate
+					          ? arc_pixel_alpha(ring, dist, ang, fill_rad)
+					          : arc_pixel_alpha(ring, dist, ang,
+					                            fclamp(fill_rad, 0.0f, sweep_rad));
+					if (a > 0.0f) {
+						uint32_t c = gradient
+						   ? lerp_color(ab->bar_color, ab->bar_color2,
+						               fclamp(ang / fill_rad, 0.0f, 1.0f))
+						   : ab->bar_color;
+						blend_pixel(&row[px], apply_opacity(c, a * op));
+					}
+				}
 			}
 		}
 	}
@@ -946,20 +1337,9 @@ void draw_arc_bar(drm_buffer_t *buf, arc_bar_t *ab, uint64_t now) {
 
 	/* Centre label */
 	if (ab->show_percent && ab->font_slot >= 0 && ab->font_size > 0.0f) {
-		text_element_t tmp;
-		memset(&tmp, 0, sizeof(tmp));
-		snprintf(tmp.text, sizeof(tmp.text), "%d%%",
-		         (int)(fclamp(ab->value, 0.0f, 1.0f) * 100.0f + 0.5f));
-		tmp.active    = 1;
-		tmp.x         = cx;
-		tmp.y         = cy;
-		tmp.align     = ALIGN_CENTER;
-		tmp.valign    = VALIGN_MIDDLE;
-		tmp.font_slot = ab->font_slot;
-		tmp.font_size = ab->font_size;
-		tmp.color     = ab->text_color;
-		tmp.opacity   = ab->opacity;
-		draw_text_element(buf, &tmp);
+		draw_centered_percent(buf, ab->value, cx, cy,
+		                      ab->font_slot, ab->font_size,
+		                      ab->text_color, ab->opacity);
 	}
 }
 
@@ -974,8 +1354,9 @@ void render_frame(splash_state_t *st) {
 
 	draw_filled_rect(buf, 0, 0, buf->width, buf->height, st->bg_color);
 
-	/* Outgoing background, underneath, during a crossfade. */
-	if (st->bg_prev_loaded && st->bg_prev.rgba) {
+	/* Outgoing background, underneath, during a crossfade. bg_prev.rgba is
+	 * non-NULL exactly while an outgoing image is held, so it is its own flag. */
+	if (st->bg_prev.rgba) {
 		int dx, dy, dw, dh;
 		calculate_scaled_rect(buf->width, buf->height,
 		                      st->bg_prev.w, st->bg_prev.h,
@@ -994,9 +1375,39 @@ void render_frame(splash_state_t *st) {
 		                      st->bg_image.w, st->bg_image.h,
 		                      st->bg_scale_mode, st->bg_custom_scale,
 		                      &dx, &dy, &dw, &dh);
-		draw_image(buf, dx, dy, dw, dh, st->bg_image.rgba,
-		           st->bg_image.w, st->bg_image.h,
-		           st->bg_filter, st->bg_opacity);
+
+		/* Steady state (no crossfade, opacity 1, kernel filter): resample once
+		 * into the cache, then blit it 1:1 - bit-identical to the live path but
+		 * without re-Lanczos-ing the same image every frame. The brief crossfade
+		 * (opacity < 1) and the cheap nearest filter use the direct path. */
+		int cacheable = (st->bg_opacity >= 1.0f) &&
+		                (st->bg_filter != IMG_NEAREST) && dw > 0 && dh > 0;
+		if (cacheable) {
+			if (st->bg_cache_dirty || !st->bg_cache.rgba ||
+			    st->bg_cache.w != dw || st->bg_cache.h != dh ||
+			    st->bg_cache_filter != st->bg_filter) {
+				free_image(&st->bg_cache);
+				st->bg_cache.rgba = malloc((size_t)dw * dh * 4);
+				if (st->bg_cache.rgba) {
+					resample_image_to(st->bg_cache.rgba, dw, dh,
+					                  st->bg_image.rgba,
+					                  st->bg_image.w, st->bg_image.h,
+					                  st->bg_filter);
+					st->bg_cache.w      = dw;
+					st->bg_cache.h      = dh;
+					st->bg_cache_filter = st->bg_filter;
+				}
+				st->bg_cache_dirty = 0;
+			}
+		}
+
+		if (cacheable && st->bg_cache.rgba)
+			draw_image(buf, dx, dy, dw, dh, st->bg_cache.rgba,
+			           dw, dh, IMG_NEAREST, 1.0f);
+		else
+			draw_image(buf, dx, dy, dw, dh, st->bg_image.rgba,
+			           st->bg_image.w, st->bg_image.h,
+			           st->bg_filter, st->bg_opacity);
 	}
 
 	/* Image overlays. */
@@ -1030,14 +1441,39 @@ void render_frame(splash_state_t *st) {
 		if      (ov->valign == VALIGN_MIDDLE) y -= h / 2;
 		else if (ov->valign == VALIGN_BOTTOM) y -= h;
 
-		draw_image(buf, x, y, w, h, ov->img.rgba,
-		           ov->img.w, ov->img.h, ov->filter, ov->opacity);
+		if (ov->angle != 0.0f || ov->radius > 0 || (ov->tint >> 24) > 0)
+			draw_image_ex(buf, x, y, w, h, ov->img.rgba,
+			              ov->img.w, ov->img.h, ov->opacity,
+			              ov->angle, ov->radius, ov->tint);
+		else
+			draw_image(buf, x, y, w, h, ov->img.rgba,
+			           ov->img.w, ov->img.h, ov->filter, ov->opacity);
 	}
 
-	/* Rectangles, then progress bars, then text, then spinners on top. */
+	for (int i = 0; i < MAX_SPRITES; i++) {
+		if (st->sprites[i].active)
+			draw_sprite(buf, &st->sprites[i]);
+	}
+
+	/* Rectangles, then ellipses, then progress bars, then text, spinners on top. */
 	for (int i = 0; i < MAX_RECTANGLES; i++) {
 		if (st->rects[i].active)
 			draw_rect_element(buf, &st->rects[i]);
+	}
+
+	for (int i = 0; i < MAX_ELLIPSES; i++) {
+		if (st->ellipses[i].active)
+			draw_ellipse(buf, &st->ellipses[i]);
+	}
+
+	for (int i = 0; i < MAX_LINES; i++) {
+		if (st->lines[i].active)
+			draw_line(buf, &st->lines[i]);
+	}
+
+	for (int i = 0; i < MAX_STEPPERS; i++) {
+		if (st->steppers[i].active)
+			draw_stepper(buf, &st->steppers[i]);
 	}
 
 	for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
@@ -1053,6 +1489,11 @@ void render_frame(splash_state_t *st) {
 	for (int i = 0; i < MAX_TEXT_ELEMENTS; i++) {
 		if (st->texts[i].active)
 			draw_text_element(buf, &st->texts[i]);
+	}
+
+	for (int i = 0; i < MAX_MARQUEES; i++) {
+		if (st->marquees[i].active)
+			draw_marquee(buf, &st->marquees[i]);
 	}
 
 	for (int i = 0; i < MAX_CONSOLES; i++) {

@@ -404,7 +404,9 @@ static int _drmModeRmFB(int fd, uint32_t bufferId) {
 
 static int find_crtc_for_encoder(_drmModeRes *res, _drmModeEncoder *enc) {
 	for (int i = 0; i < res->count_crtcs; i++) {
-		if (enc->possible_crtcs & (1 << i))
+		/* possible_crtcs is a 32-bit mask; `1 << i` for i >= 31 would be
+		 * signed-shift UB and bits >= 32 can never match anyway. */
+		if (i < 32 && (enc->possible_crtcs & (1u << i)))
 			return res->crtcs[i];
 	}
 	return -1;
@@ -571,9 +573,10 @@ static int drm_open_device(const char *path) {
 	return fd;
 }
 
-int drm_init(splash_drm_t *ctx, const char *device) {
+int drm_init(splash_drm_t *ctx, const char *device, int headless) {
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->fd = -1;
+	ctx->headless = headless;
 
 	/*
 	 * Cold-boot retry. When the splash is the first thing to run at
@@ -596,6 +599,9 @@ int drm_init(splash_drm_t *ctx, const char *device) {
 		}
 
 		if (attempt + 1 < DRM_INIT_RETRIES) {
+			LOGT("DRM not ready (%s), retry %d/%d in %d ms",
+			     fd < 0 ? "device absent" : "no usable connector",
+			     attempt + 1, DRM_INIT_RETRIES, DRM_INIT_RETRY_MS);
 			struct timespec ts;
 			ts.tv_sec  =  DRM_INIT_RETRY_MS / 1000;
 			ts.tv_nsec = (DRM_INIT_RETRY_MS % 1000) * 1000000L;
@@ -604,17 +610,28 @@ int drm_init(splash_drm_t *ctx, const char *device) {
 	}
 
 	if (!ready) {
+		/* Fatal (the daemon exits next), so report at ERROR: visible even at
+		 * the default threshold, where the headline is the only clue to why a
+		 * boot has no splash. */
+		LOGE("DRM bring-up gave up after %d attempts: %s", DRM_INIT_RETRIES,
+		     fd < 0 ? "device never opened"
+		            : "no connected connector with a usable mode");
 		if (fd >= 0)
 			close(fd);
 		return -1;
 	}
 	ctx->fd = fd;
 
+	LOGD("DRM ready: connector %u, CRTC %u, mode %ux%u@%uHz",
+	     ctx->conn_id, ctx->crtc_id,
+	     ctx->mode.hdisplay, ctx->mode.vdisplay, ctx->mode.vrefresh);
+
 	uint32_t w = ctx->mode.hdisplay;
 	uint32_t h = ctx->mode.vdisplay;
 
 	if (create_dumb_buffer(ctx->fd, &ctx->buf[0], w, h) < 0 ||
 	    create_dumb_buffer(ctx->fd, &ctx->buf[1], w, h) < 0) {
+		LOGE("failed to allocate %ux%u framebuffers", w, h);
 		destroy_dumb_buffer(ctx->fd, &ctx->buf[0]);
 		close(ctx->fd);
 		ctx->fd = -1;
@@ -635,34 +652,83 @@ int drm_init(splash_drm_t *ctx, const char *device) {
 		_drmModeFreeCrtc(crtc);
 	}
 
-	/* Scan out the first buffer. */
-	uint32_t conn = ctx->conn_id;
-	_drmModeSetCrtc(ctx->fd, ctx->crtc_id, ctx->buf[0].fb_id,
-	                0, 0, &conn, 1, &ctx->mode);
+	LOGT("CRTC state: %s", ctx->saved_crtc.mode_valid
+	     ? "prior mode saved, will restore on exit"
+	     : "none (cold KMS bring-up)");
+
 	ctx->front_buf = 0;
+
+	/*
+	 * Scan out the first buffer - unless headless, where we deliberately
+	 * never program the CRTC so the existing console scanout stays on screen.
+	 * Buffers are still allocated and rendered into (off-screen), so the full
+	 * render path is exercised and logs/console remain visible underneath.
+	 */
+	if (!ctx->headless) {
+		uint32_t conn = ctx->conn_id;
+		_drmModeSetCrtc(ctx->fd, ctx->crtc_id, ctx->buf[0].fb_id,
+		                0, 0, &conn, 1, &ctx->mode);
+	} else {
+		LOGD("headless: CRTC left untouched, rendering off-screen only");
+	}
 
 	return 0;
 }
 
 void drm_cleanup(splash_drm_t *ctx) {
-	/* Hand the display back to whatever owned it before. */
+	if (ctx->fd < 0)
+		return;
+
+	/* Headless never programmed the CRTC, so there is nothing to restore and
+	 * no splash frame to blank: just release the buffers and the device. */
+	if (ctx->headless) {
+		destroy_dumb_buffer(ctx->fd, &ctx->buf[0]);
+		destroy_dumb_buffer(ctx->fd, &ctx->buf[1]);
+		close(ctx->fd);
+		ctx->fd = -1;
+		return;
+	}
+
 	if (ctx->saved_crtc.mode_valid) {
+		/* A real previous mode existed (e.g. fbcon was up): hand it back. */
+		LOGT("restoring saved CRTC %u", ctx->saved_crtc.crtc_id);
 		uint32_t conn = ctx->conn_id;
 		_drmModeSetCrtc(ctx->fd, ctx->saved_crtc.crtc_id,
 		                ctx->saved_crtc.buffer_id,
 		                ctx->saved_crtc.x, ctx->saved_crtc.y,
 		                &conn, 1, &ctx->saved_crtc.mode);
+	} else {
+		/*
+		 * Cold KMS bring-up: nothing was scanned out before us, so there
+		 * is no prior mode to restore. Closing the fd now would leave the
+		 * last splash frame frozen on screen. Present a black frame first
+		 * so the resting state is a clean blank. If the kernel has fbdev
+		 * emulation it still restores the text console on lastclose once
+		 * the fd is closed, simply overwriting this black frame.
+		 */
+		LOGT("cold bring-up: presenting black frame before close");
+		drm_buffer_t *buf = &ctx->buf[ctx->front_buf ^ 1];
+		draw_filled_rect(buf, 0, 0, (int)buf->width, (int)buf->height,
+		                 0xFF000000);
+		drm_flip(ctx);
 	}
+
 	destroy_dumb_buffer(ctx->fd, &ctx->buf[0]);
 	destroy_dumb_buffer(ctx->fd, &ctx->buf[1]);
-	if (ctx->fd >= 0) {
-		close(ctx->fd);
-		ctx->fd = -1;
-	}
+	close(ctx->fd);
+	ctx->fd = -1;
 }
 
 /* Present the back buffer and make it the new front buffer. */
 void drm_flip(splash_drm_t *ctx) {
+	/* Headless: rendering still happened into the back buffer, but we never
+	 * scan it out. Advance front_buf so double-buffered rendering keeps
+	 * alternating exactly as it would on screen. */
+	if (ctx->headless) {
+		ctx->front_buf ^= 1;
+		return;
+	}
+
 	int next = ctx->front_buf ^ 1;
 	uint32_t conn = ctx->conn_id;
 	_drmModeSetCrtc(ctx->fd, ctx->crtc_id, ctx->buf[next].fb_id,

@@ -49,16 +49,15 @@ void kbd_init(splash_state_t *st) {
 
 		st->kbd_fd = fd;
 
-		if (st->debug) {
+		if (LOG_DEBUG <= log_threshold) {
 			char name[64] = "(unknown)";
 			ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name);
-			fprintf(stderr, "[debug] keyboard: %s (%s)\n", path, name);
+			LOGD("keyboard: %s (%s)", path, name);
 		}
 		return;
 	}
 
-	if (st->debug)
-		fprintf(stderr, "[debug] keyboard: no suitable input device found\n");
+	LOGD("keyboard: no suitable input device found");
 }
 
 /* ========================================================================
@@ -96,8 +95,6 @@ void kbd_process(splash_state_t *st) {
 		st->hidden       = !st->hidden;
 		st->needs_render = 1;
 
-		if (st->debug)
-			fprintf(stderr, "[debug] ESC: splash %s\n",
-			        st->hidden ? "hidden" : "visible");
+		LOGD("ESC: splash %s", st->hidden ? "hidden" : "visible");
 	}
 }
