@@ -236,6 +236,7 @@ static int cmd_resume(splash_state_t *st, cJSON *args, int client_idx) {
 static int cmd_status(splash_state_t *st, cJSON *args, int client_idx) {
 	(void)args;
 	cJSON *resp = create_response("ok", NULL);
+	cJSON_AddStringToObject(resp, "version", SPLASH_VERSION);
 	cJSON_AddStringToObject(resp, "state",
 	                        st->frozen ? "suspended" : "running");
 	cJSON_AddBoolToObject(resp, "ready",  st->ready);
@@ -244,6 +245,22 @@ static int cmd_status(splash_state_t *st, cJSON *args, int client_idx) {
 	                        (double)st->drm.buf[0].width);
 	cJSON_AddNumberToObject(resp, "height",
 	                        (double)st->drm.buf[0].height);
+	send_response(st, client_idx, resp);
+	return 0;
+}
+
+/*
+ * Report the running daemon's version. Cheap but valuable: a stale initramfs
+ * can keep an old daemon alive after the on-disk binaries were upgraded, so a
+ * command that "should work" silently does nothing. This lets the operator ask
+ * the live daemon over the socket (e.g. via SSH, when the screen is blocked)
+ * what version is actually running. Added in 4.0.1; older daemons answer this
+ * with "unknown command", which is itself the diagnostic.
+ */
+static int cmd_version(splash_state_t *st, cJSON *args, int client_idx) {
+	(void)args;
+	cJSON *resp = create_response("ok", NULL);
+	cJSON_AddStringToObject(resp, "version", SPLASH_VERSION);
 	send_response(st, client_idx, resp);
 	return 0;
 }
@@ -2084,6 +2101,7 @@ static const cmd_entry_t cmd_table[] = {
 	{ "suspend",         cmd_suspend         },
 	{ "resume",          cmd_resume          },
 	{ "status",          cmd_status          },
+	{ "version",         cmd_version         },
 	{ "ready",           cmd_ready           },
 	{ "clear",           cmd_clear           },
 	{ "bg_color",        cmd_bg_color        },

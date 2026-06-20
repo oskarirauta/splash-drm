@@ -297,11 +297,23 @@ void print_cmd_help(const char *cmd) {
 		fprintf(stderr,
 		"status — query daemon state\n\n"
 		"Returns:\n"
+		"  version     string  running daemon's version (since 4.0.1)\n"
 		"  state       string  \"running\" or \"suspended\"\n"
 		"  ready       bool    set by the ready command\n"
 		"  hidden      bool    true if ESC-toggled to blank\n"
 		"  width       int     display width in pixels\n"
 		"  height      int     display height in pixels\n");
+	} else if (strcmp(cmd, "version") == 0) {
+		fprintf(stderr,
+		"version — report the running daemon's version (since 4.0.1)\n\n"
+		"Takes no parameters. Returns:\n"
+		"  version     string  the daemon's compiled version\n\n"
+		"Use this to confirm which build is actually live: after upgrading the\n"
+		"on-disk binaries, a stale initramfs can keep an old daemon running, so\n"
+		"newer commands silently do nothing. Query it over the socket (e.g. via\n"
+		"SSH when the screen is blocked) to catch that.\n\n"
+		"The 'splash-ctl --daemon-version' shortcut prints it directly. A daemon\n"
+		"older than 4.0.1 replies \"unknown command\", which is itself the answer.\n");
 	} else if (strcmp(cmd, "exit") == 0) {
 		fprintf(stderr,
 		"exit — request a clean shutdown of the daemon\n\n"

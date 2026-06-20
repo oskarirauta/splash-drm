@@ -29,7 +29,12 @@ static int raw_mode   = 0;
  * Send a Command
  * ======================================================================== */
 
-static int send_json(const char *json_str) {
+/*
+ * Connect, send one JSON line, and read the reply into the caller's buffer
+ * (NUL-terminated). Returns the number of bytes read (>= 0) on success, or -1
+ * if the daemon could not be reached or the write failed.
+ */
+static ssize_t send_and_recv(const char *json_str, char *reply, size_t replysz) {
 	if (debug_mode)
 		fprintf(stderr, "[debug] Sending: %s\n", json_str);
 
@@ -65,10 +70,9 @@ static int send_json(const char *json_str) {
 	 * Read the reply. A single read() can return a partial line, so loop
 	 * until a newline arrives, the buffer fills, or the peer closes.
 	 */
-	char reply[4096];
 	size_t total = 0;
-	while (total < sizeof(reply) - 1) {
-		ssize_t n = read(fd, reply + total, sizeof(reply) - 1 - total);
+	while (total < replysz - 1) {
+		ssize_t n = read(fd, reply + total, replysz - 1 - total);
 		if (n <= 0)
 			break;
 		total += (size_t)n;
@@ -77,7 +81,67 @@ static int send_json(const char *json_str) {
 	}
 	reply[total] = '\0';
 	close(fd);
+	return (ssize_t)total;
+}
 
+/* Extract a JSON string field ("key":"value") into out. Returns 1 on success,
+ * 0 if the key is absent. Tolerant flat-scan parser, like the message handling
+ * below - good enough for the daemon's small, well-formed replies. */
+static int extract_json_string(const char *json, const char *key,
+                               char *out, size_t outsz) {
+	char pat[64];
+	snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+	const char *p = strstr(json, pat);
+	if (!p)
+		return 0;
+	p += strlen(pat);
+	const char *end = strchr(p, '"');
+	if (!end)
+		return 0;
+	size_t n = (size_t)(end - p);
+	if (n >= outsz)
+		n = outsz - 1;
+	memcpy(out, p, n);
+	out[n] = '\0';
+	return 1;
+}
+
+/*
+ * Ask the running daemon what version it is, and print it. This is distinct
+ * from --version, which reports this client's own build: here we want the
+ * version of the live daemon, which may be older if a stale initramfs is still
+ * holding the screen. A daemon predating 4.0.1 doesn't know the command and
+ * answers "unknown command" - we translate that into a clear diagnostic.
+ */
+static int print_daemon_version(void) {
+	char reply[4096];
+	ssize_t total = send_and_recv("{\"cmd\":\"version\"}", reply, sizeof(reply));
+	if (total < 0)
+		return 1;			/* connect/write already reported */
+
+	char version[64];
+	if (extract_json_string(reply, "version", version, sizeof(version))) {
+		printf("splash-drm daemon v%s\n", version);
+		return 0;
+	}
+
+	/* No version field: most likely an older daemon that rejects the command. */
+	if (strstr(reply, "unknown command")) {
+		fprintf(stderr,
+			"The running daemon does not report a version (older than 4.0.1).\n"
+			"A stale initramfs may be running an outdated splash-drm - rebuild it.\n");
+	} else {
+		fprintf(stderr, "Unexpected reply from daemon: %s\n",
+		        total > 0 ? reply : "(empty)");
+	}
+	return 1;
+}
+
+static int send_json(const char *json_str) {
+	char reply[4096];
+	ssize_t total = send_and_recv(json_str, reply, sizeof(reply));
+	if (total < 0)
+		return -1;
 	if (total == 0)
 		return 0;
 
@@ -149,7 +213,8 @@ static void print_usage(const char *prog) {
 		"  --debug       Show debug output\n"
 		"  --help        Show this help and exit\n"
 		"  --help <cmd>  Show full parameter list for a command\n"
-		"  -V, --version Show version and exit\n\n"
+		"  -V, --version Show this client's version and exit\n"
+		"  --daemon-version  Ask the running daemon its version and exit\n\n"
 		"JSON format (single command):\n"
 		"  {\"cmd\": \"text\", \"id\": 0, \"x\": -1, \"y\": -1, \"text\": \"Hello\"}\n\n"
 		"JSON format (batch):\n"
@@ -170,7 +235,7 @@ static void print_usage(const char *prog) {
 		"  Console:     console   console_write    remove_console\n"
 		"  QR code:     qr        remove_qr\n"
 		"  Animation:   animate\n"
-		"  Query:       query     status\n"
+		"  Query:       query     status           version\n"
 		"  Control:     suspend   resume           ready           exit\n\n"
 		"Run 'splash-ctl --help <cmd>' for full parameter details.\n\n"
 		"Examples:\n"
@@ -221,6 +286,8 @@ int main(int argc, char **argv) {
 			   strcmp(argv[arg_offset], "-v") == 0) {	/* -v kept as a deprecated alias */
 			printf("splash-ctl v%s\n", SPLASH_VERSION);
 			return 0;
+		} else if (strcmp(argv[arg_offset], "--daemon-version") == 0) {
+			return print_daemon_version();
 		} else {
 			fprintf(stderr, "Unknown option: %s\n", argv[arg_offset]);
 			return 1;

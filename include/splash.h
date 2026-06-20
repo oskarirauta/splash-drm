@@ -35,7 +35,7 @@
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "4.0.0"
+#define SPLASH_VERSION      "4.0.1"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8

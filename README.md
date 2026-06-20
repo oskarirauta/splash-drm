@@ -168,6 +168,20 @@ splash-ctl '{"cmd":"arc","id":0,"value":0.75}'
 splash-ctl '[{"cmd":"arc","id":0,"value":1.0},{"cmd":"exit"}]'
 ```
 
+Useful client flags: `--raw` prints the daemon's raw JSON reply, `--file` reads
+the JSON from a file, `-V` / `--version` prints **this client's** build, and
+`--daemon-version` asks the **running daemon** what version it is:
+
+```bash
+splash-ctl --daemon-version      # → splash-drm daemon v4.0.1
+```
+
+This catches a stale initramfs: if you upgrade splash-drm on disk but forget to
+rebuild the initramfs, the old daemon keeps running and newer commands silently
+do nothing. SSH in (when the screen is blocked) and ask the live daemon. A
+daemon older than 4.0.1 doesn't know the command and says so — which is itself
+the answer. The version is also included in the `status` reply.
+
 ## Command reference
 
 Every command is a JSON object with a `cmd` field. Use `splash-drm --help <cmd>`
@@ -212,7 +226,8 @@ that prefer them.
 |---------|---------|
 | `clear` | Full reset: remove every element and the background. Loaded fonts are kept. |
 | `suspend` / `resume` | Freeze or resume rendering. |
-| `status` | Query daemon state. Returns `state`, `ready`, `hidden`, `width`, `height`. |
+| `status` | Query daemon state. Returns `version`, `state`, `ready`, `hidden`, `width`, `height`. |
+| `version` | Return the running daemon's version (`{"status":"ok","version":"…"}`). Since 4.0.1; older daemons reply `unknown command`. |
 | `ready` | Mark the daemon as ready (for external polling). |
 | `exit` | Tell the daemon to shut down cleanly. Optional `delay` (seconds) keeps it rendering before exiting. |
 

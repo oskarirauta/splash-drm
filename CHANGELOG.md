@@ -3,6 +3,24 @@
 All notable changes to splash-drm are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.0.1] - 2026-06-20
+
+### Added
+
+- **`version` command — ask the running daemon its version (cmd.c, splash-ctl.c,
+  usage.c)** — A new socket command, `{"cmd":"version"}`, returns the live
+  daemon's compiled version (`{"status":"ok","version":"4.0.1"}`); the `status`
+  reply now carries the same `version` field. The `splash-ctl --daemon-version`
+  shortcut sends it and prints `splash-drm daemon v<x>` directly. This is a
+  diagnostic for a real footgun: after upgrading the on-disk binaries, a stale
+  initramfs can keep an *old* daemon alive, so newer commands "should work" but
+  silently do nothing. Querying the live daemon over the socket — e.g. via SSH
+  when the screen is blocked — reveals the mismatch. A daemon predating 4.0.1
+  doesn't know the command and replies `"unknown command"`; `--daemon-version`
+  translates that into a clear "older than 4.0.1, rebuild your initramfs" hint,
+  so even the failure is diagnostic. Distinct from `splash-ctl --version` / `-V`,
+  which reports the *client's* own build.
+
 ## [4.0.0] - 2026-06-20
 
 ### New files
