@@ -3,6 +3,92 @@
 All notable changes to splash-drm are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [4.0.2] - 2026-06-21
+
+### Added
+
+- **splash-ctl shorthand flags for the system commands (splash-ctl.c)** —
+  `--status`, `--suspend`, `--resume` and `--exit` send the matching
+  `{"cmd":...}`, and `--exit --timeout <s>` adds the `delay` (a delayed
+  shutdown). Init scripts mix drawing commands (JSON) with control commands; the
+  flags let the "system" actions stand out as plain options instead of being
+  buried in JSON. `--status` prints the status JSON; `--timeout` is rejected
+  unless paired with `--exit`.
+
+- **`running` liveness probe (cmd.c, splash-ctl.c)** — A new `running` command
+  and the `splash-ctl --running` flag report whether the daemon is up. Unlike
+  every other command, this never surfaces a connection error: `--running`
+  prints `running` / `not running` and exits `0` / `1`, and a raw
+  `{"cmd":"running"}` always prints `{"running":true}` or `{"running":false}` —
+  the client answers it locally so a script gets a boolean even when the daemon
+  is down. A live daemon's own reply is `{"status":"ok","running":true}`.
+
+- **Console `autofit` option (cmd.c, font.c)** — `{"cmd":"console", ...,
+  "autofit":true}` snaps the console's drawn height down to a whole number of
+  text rows. The box height rarely divides evenly by the line advance, and the
+  leftover sub-line remainder shows up as a gap above (or, before the
+  bottom-anchor fix, below) the text. With `autofit`, the box shrinks from the
+  bottom to the nearest row boundary so a full log fills it edge to edge with
+  symmetric padding and no leftover gap. A console therefore needs no empty space
+  of its own — any decorative margin can be drawn with a `rect` behind it.
+
+### Fixed
+
+- **A bad `--config` / `--cmds` file failed silently (main.c)** — An unreadable
+  file, unparseable JSON, or a startup command that errored were all logged at
+  `LOGW` (warning), but the default log threshold is `ERROR`, so nothing reached
+  the log: a malformed startup file simply produced no splash with no clue why.
+  These are now `LOGE` (error), so they are visible at the default level (and in
+  syslog/kmsg when forked). `--check` already reported them; normal startup now
+  does too.
+
+- **Console ignored its padding on the right edge (font.c)** — Text started at
+  `con->x + padding` (so the left, top and bottom margins were honoured) but the
+  compositing clip ran to the full right edge `con->x + con->w`, so a long
+  enough line filled to the box edge with no right margin. The clip is now inset
+  by `padding` on the right too, giving an equal margin on both sides; an
+  over-long line is cropped at `con->w - padding`.
+
+- **Out-of-bounds write rendering text in an over-sized box (font.c)** —
+  `composite_coverage` clipped glyph pixels only to the caller's clip rectangle,
+  not to the framebuffer. A console (or any text) whose box extended past the
+  screen edge — easy to hit now that quoted pixel sizes like `"h": "900"` are
+  honoured, e.g. a tall box on a small panel — composited glyphs at coordinates
+  outside the buffer and segfaulted the daemon on the next render after a write.
+  The clip rectangle is now clamped to the framebuffer bounds, so an over-sized
+  or off-screen box is simply cropped instead of crashing.
+
+- **Quoted pixel coordinates were silently ignored (utils.c)** — `get_coord`
+  accepted a JSON number (`480`) or a percentage string (`"40%"`), but a plain
+  numeric *string* (`"480"`) fell through to the default. Because the layout
+  examples write every dimension as a string (`"h": "40%"`), quoting the pixel
+  form alongside them (`"h": "480"`) looked natural yet was dropped — so an
+  element's `x`/`y`/`w`/`h` appeared to honour only percentages. Strings are now
+  parsed with `strtod`: a non-percentage numeric string is taken as pixels, so
+  `480` and `"480"` behave identically. Percentages, negative-centre `-1`, and
+  rejection of non-numeric junk are unchanged.
+
+- **Console element wasted the bottom of the box and left a stray empty line
+  (font.c)** — The console anchored its lines off `pad + max_vis * line_adv`,
+  where `max_vis = inner_h / line_adv` truncates: the `inner_h % line_adv`
+  remainder was left as blank space *below* the newest line, so the most recent
+  line never sat flush at the bottom as documented ("an empty line at the end").
+  Lines are now anchored directly off the box bottom (`con->y + con->h - pad`)
+  and grow upward, so the newest line is flush against the bottom padding and
+  any slack opens at the top instead. A full buffer now fills the box top to
+  bottom with no gap.
+
+### Changed
+
+- **Console `max_lines` now defaults to the full capacity (cmd.c)** — The default
+  was 32, but the backing `lines[]` ring is always `CONSOLE_MAX_LINES` (64)
+  wide, so a tall console capped its visible history at half the box for no
+  saving. The default is now `CONSOLE_MAX_LINES`; combined with the anchoring
+  fix, a console fills completely once enough lines are written. The
+  `examples/openwrt-boot.json` layout dropped its explicit `max_lines: 14`,
+  which had been smaller than the box's visible capacity and so left the upper
+  half permanently empty.
+
 ## [4.0.1] - 2026-06-20
 
 ### Added

@@ -35,7 +35,7 @@
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "4.0.1"
+#define SPLASH_VERSION      "4.0.2"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8
@@ -493,6 +493,7 @@ typedef struct {
 	uint32_t color;           /* text colour */
 	uint32_t bg_color;        /* background fill; alpha 0 = transparent */
 	int      padding;         /* inner margin in pixels */
+	int      autofit;         /* snap drawn height to whole text rows */
 	int      max_lines;       /* ring buffer capacity (≤ CONSOLE_MAX_LINES) */
 	int      line_count;      /* lines currently stored (≤ max_lines) */
 	int      head;            /* next write index in lines[] */

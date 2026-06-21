@@ -238,7 +238,9 @@ void print_cmd_help(const char *cmd) {
 		"  color       color   text color\n"
 		"  bg_color    color   background fill; alpha 0 = transparent\n"
 		"  padding     int     inner margin in pixels\n"
-		"  max_lines   int     ring buffer capacity (max: 64)\n"
+		"  autofit     bool    snap drawn height down to whole text rows so a\n"
+		"                      full log fills the box with no leftover gap\n"
+		"  max_lines   int     ring buffer capacity (default & max: 64)\n"
 		"  opacity     float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied console fields are merged (others keep\n"
 		"their current value). \"replace\":true resets to defaults first;\n"
@@ -314,6 +316,17 @@ void print_cmd_help(const char *cmd) {
 		"SSH when the screen is blocked) to catch that.\n\n"
 		"The 'splash-ctl --daemon-version' shortcut prints it directly. A daemon\n"
 		"older than 4.0.1 replies \"unknown command\", which is itself the answer.\n");
+	} else if (strcmp(cmd, "running") == 0) {
+		fprintf(stderr,
+		"running — liveness probe (since 4.0.2)\n\n"
+		"Takes no parameters. A live daemon always replies:\n"
+		"  running     bool    always true (only a running daemon can answer)\n\n"
+		"Meant for the 'splash-ctl --running' / 'splash-ctl '{\"cmd\":\"running\"}''\n"
+		"shortcuts, which report the daemon's state without ever failing on a\n"
+		"connection error: --running prints 'running' or 'not running' and exits\n"
+		"0 or 1; the raw command always prints {\"running\":true} or\n"
+		"{\"running\":false}, so a script gets a boolean even when the daemon is\n"
+		"down.\n");
 	} else if (strcmp(cmd, "exit") == 0) {
 		fprintf(stderr,
 		"exit — request a clean shutdown of the daemon\n\n"

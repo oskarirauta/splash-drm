@@ -243,6 +243,15 @@ static void composite_coverage(drm_buffer_t *buf, const uint8_t *cov,
 	if (ca == 0)
 		return;
 
+	/* Clamp the clip rectangle to the framebuffer. A caller's clip box can
+	 * extend past the screen (e.g. an oversized or off-screen console box),
+	 * and py/px below are bounded only by this rect - without the clamp a
+	 * glyph landing outside the buffer would write out of bounds. */
+	if (clip_x0 < 0) clip_x0 = 0;
+	if (clip_y0 < 0) clip_y0 = 0;
+	if (clip_x1 > (int)buf->width)  clip_x1 = (int)buf->width;
+	if (clip_y1 > (int)buf->height) clip_y1 = (int)buf->height;
+
 	/* Linearise source colour once (sRGB² / 255, result in 0..255). */
 	uint32_t slr = (uint32_t)cr * cr / 255;
 	uint32_t slg = (uint32_t)cg * cg / 255;
@@ -726,11 +735,6 @@ void draw_console_element(drm_buffer_t *buf, console_t *con) {
 	if (line_adv < 1)
 		line_adv = 1;
 
-	/* Optional background. */
-	if ((con->bg_color >> 24) > 0)
-		draw_filled_rect(buf, con->x, con->y, con->w, con->h,
-		                 apply_opacity(con->bg_color, op));
-
 	int pad      = con->padding;
 	int inner_h  = con->h - 2 * pad;
 	if (inner_h <= 0)
@@ -740,18 +744,38 @@ void draw_console_element(drm_buffer_t *buf, console_t *con) {
 	if (max_vis <= 0)
 		return;
 
+	/* With "autofit", snap the drawn box down to a whole number of text rows so
+	 * the sub-line remainder (inner_h % line_adv) is not left as padding: the box
+	 * shrinks from the bottom to the nearest row boundary and text fills it edge
+	 * to edge. Without it the box keeps its given height and, since lines are
+	 * bottom-anchored, that remainder opens at the top. (A purely decorative
+	 * margin can still be drawn with a rect behind the console.) */
+	int box_h = con->autofit ? (2 * pad + max_vis * line_adv) : con->h;
+
+	/* Optional background. */
+	if ((con->bg_color >> 24) > 0)
+		draw_filled_rect(buf, con->x, con->y, con->w, box_h,
+		                 apply_opacity(con->bg_color, op));
+
 	/* How many lines to show: the most recent min(count, max_vis). */
 	int vis = con->line_count < max_vis ? con->line_count : max_vis;
 
-	/* Clip rectangle for compositing. */
+	/* Clip rectangle for compositing. Text starts at con->x + pad, so the right
+	 * edge is inset by pad too, giving an equal margin on both sides; a long
+	 * line is cropped at con->w - pad instead of running to the box edge. The
+	 * top/bottom come from the line positioning (bottom-anchored within the
+	 * padded region), so clip_y stays at the box edges and never cuts a line. */
 	int clip_x0 = con->x;
 	int clip_y0 = con->y;
-	int clip_x1 = con->x + con->w;
-	int clip_y1 = con->y + con->h;
+	int clip_x1 = con->x + con->w - pad;
+	int clip_y1 = con->y + box_h;
 
-	/* "Grow from bottom": when fewer lines than max_vis, push them down
-	 * so that the newest line always sits at the bottom of the box. */
-	int top_y = con->y + pad + (max_vis - vis) * line_adv;
+	/* Bottom-anchored: the newest line sits flush against the bottom padding
+	 * and lines grow upward, so when fewer lines than fit are present the gap
+	 * opens at the top. Anchoring off box_h (rather than pad + max_vis*line_adv)
+	 * keeps the newest line flush with the bottom padding without leaving the
+	 * sub-line remainder as a stray empty line below the text. */
+	int bottom_y = con->y + box_h - pad;   /* bottom edge of the newest line */
 
 	/* Iterate oldest-to-newest (top-to-bottom in display). */
 	int max_lines  = con->max_lines;
@@ -768,7 +792,9 @@ void draw_console_element(drm_buffer_t *buf, console_t *con) {
 		                                      : con->color;
 		uint32_t color = apply_opacity(lc, op);
 
-		int line_y = top_y + i * line_adv;   /* top pixel of the line */
+		/* Top pixel of line i, counting oldest (0) to newest (vis-1); the
+		 * newest lands with its cell bottom (line_y + th) on bottom_y. */
+		int line_y = bottom_y - th - (vis - 1 - i) * line_adv;
 
 		if (line_y >= clip_y1)
 			break;

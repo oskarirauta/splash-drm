@@ -94,7 +94,7 @@ splash-drm <drm_device> [options]
 | `--check` | Validate `--config`/`--cmds` without opening DRM, then exit (`0` = ok). |
 | `--dump <file.png>` | Render one frame from `--config`/`--cmds` to a PNG file, then exit (no daemon loop, no control socket). Pair with `--headless` to render without touching the live console. |
 | `-q`, `--quiet` | Silence all output (even errors). |
-| `-v`, `-vv`, `-vvv` | Increase log verbosity (info / debug / trace). |
+| `-v`, `-vv`, `-vvv` | Log threshold: info / debug / trace (each includes the lower levels, so warnings already show at `-v`). |
 | `--debug` | Alias for `-vv` (debug verbosity). |
 | `--log <target>` | Log sink: `auto` (default), `stderr`, `syslog`, or `kmsg`. |
 | `-V`, `--version` | Print the version and exit. |
@@ -104,10 +104,13 @@ splash-drm <drm_device> [options]
 ### Logging
 
 The daemon has five log levels — `ERROR < WARN < INFO < DEBUG < TRACE`. The
-default level is `ERROR`, so a normal run is silent except for genuine
-failures. Raising verbosity with `-v` (info), `-vv` (debug), or `-vvv` (trace)
-turns on progressively more detail; `--debug` is an alias for `-vv`. `-q` /
-`--quiet` silences everything, including errors.
+threshold shows every message at or below the chosen level, so each level
+includes the ones beneath it. The default (no flag) is `ERROR`, so a normal run
+is silent except for genuine failures. `-v` raises the threshold to `INFO`,
+`-vv` to `DEBUG`, and `-vvv` to `TRACE`; `--debug` is an alias for `-vv`. There
+is no separate flag for `WARN` because `INFO` already includes it — **warnings
+are visible from `-v` upward.** The flags are additive (`-v -vv` sums to `-vvv`
+= trace). `-q` / `--quiet` silences everything, including errors.
 
 The `--log` sink controls where messages go. A foreground run logs to
 `stderr`. A `--fork`ed daemon has its stdio redirected to `/dev/null`, so it
@@ -176,6 +179,27 @@ the JSON from a file, `-V` / `--version` prints **this client's** build, and
 splash-ctl --daemon-version      # → splash-drm daemon v4.0.1
 ```
 
+The "system" commands also have shorthand flags, so init scripts can keep them
+visually distinct from the drawing commands instead of burying them in JSON:
+
+```bash
+splash-ctl --status              # print the daemon status JSON
+splash-ctl --running             # "running" / "not running", exit 0 / 1
+splash-ctl --suspend             # {"cmd":"suspend"} — freeze rendering
+splash-ctl --resume              # {"cmd":"resume"}  — resume rendering
+splash-ctl --exit                # {"cmd":"exit"}    — shut the daemon down
+splash-ctl --exit --timeout 3    # {"cmd":"exit","delay":3} — exit after 3 s
+```
+
+`--running` is a liveness probe that never fails with a connection error: it
+prints `running` / `not running` and exits `0` / `1`. The raw `{"cmd":"running"}`
+form always prints `{"running":true}` or `{"running":false}` instead, so a
+script gets a boolean even when the daemon is down:
+
+```bash
+if splash-ctl --running >/dev/null; then echo "splash is up"; fi
+```
+
 This catches a stale initramfs: if you upgrade splash-drm on disk but forget to
 rebuild the initramfs, the old daemon keeps running and newer commands silently
 do nothing. SSH in (when the screen is blocked) and ask the live daemon. A
@@ -228,6 +252,7 @@ that prefer them.
 | `suspend` / `resume` | Freeze or resume rendering. |
 | `status` | Query daemon state. Returns `version`, `state`, `ready`, `hidden`, `width`, `height`. |
 | `version` | Return the running daemon's version (`{"status":"ok","version":"…"}`). Since 4.0.1; older daemons reply `unknown command`. |
+| `running` | Liveness probe; a live daemon always returns `{"status":"ok","running":true}`. Since 4.0.2. Backs `splash-ctl --running`, which reports `not running` (never a connection error) when the daemon is down. |
 | `ready` | Mark the daemon as ready (for external polling). |
 | `exit` | Tell the daemon to shut down cleanly. Optional `delay` (seconds) keeps it rendering before exiting. |
 
@@ -273,7 +298,7 @@ See [Creating vs. updating elements](#creating-vs-updating-elements-merge-update
 | `remove_arc` | Remove an arc element and free the slot. |
 | `spinner` | Create / show / hide an Apple-style rotating spinner (`x`, `y`, `radius`, `spokes`, `color`, `period`, `action`, `opacity`). |
 | `remove_spinner` | Remove (deactivate) a spinner by `id`. |
-| `console` | Create or reconfigure a scrolling log area (`x`, `y`, `w`, `h`, `font_slot`, `size`, `color`, `bg_color`, `padding`, `max_lines`, `opacity`). |
+| `console` | Create or reconfigure a scrolling log area (`x`, `y`, `w`, `h`, `font_slot`, `size`, `color`, `bg_color`, `padding`, `autofit`, `max_lines`, `opacity`). `autofit:true` snaps the drawn height down to whole text rows so a full log fills the box with no leftover gap. |
 | `console_write` | Push one or more lines of text into a console (`id`, `text`; `\n` splits into separate lines). |
 | `remove_console` | Remove a console element by `id`. |
 | `qr` | Create or update a QR code element (`text`, `x`, `y`, `align`, `valign`, `module_px`, `border`, `ecc`, `color`, `bg_color`, `opacity`). |
@@ -298,7 +323,8 @@ Alpha is in the last byte (AA); 00 = fully transparent, ff = fully opaque.
 
 `x`, `y`, `w`, `h` accept:
 
-- An integer pixel value: `960`
+- An integer pixel value, bare or quoted: `960` or `"960"` (handy when the
+  surrounding fields are percentage strings)
 - A percentage string resolved against the display dimension: `"50%"` → half
   the screen width (for `x`/`w`) or height (for `y`/`h`)
 - A negative integer for `x` or `y`: anchors to the screen centre on that

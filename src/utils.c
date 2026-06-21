@@ -72,9 +72,13 @@ uint32_t parse_color(const char *str) {
 }
 
 /*
- * Like get_int() but accepts a percentage string ("80%") which is resolved
- * relative to `dim` (the relevant screen dimension).  Pure numbers behave
- * identically to get_int().  Missing key returns `default_val`.
+ * Like get_int() but accepts either a JSON number or a string. A string ending
+ * in '%' ("80%") is resolved relative to `dim` (the relevant screen dimension);
+ * a plain numeric string ("480", "-1") is taken as a pixel value, so a coord
+ * behaves the same whether written 480 or "480" (the layout examples quote
+ * percentages, and quoting the pixel form alongside them is the obvious thing
+ * to do). Pure JSON numbers behave identically to get_int(). A non-numeric or
+ * missing value returns `default_val`.
  */
 int get_coord(cJSON *obj, const char *key, int dim, int default_val) {
 	cJSON *item = cJSON_GetObjectItem(obj, key);
@@ -84,15 +88,22 @@ int get_coord(cJSON *obj, const char *key, int dim, int default_val) {
 		return item->valueint;
 	if (cJSON_IsString(item)) {
 		const char *s = item->valuestring;
-		size_t len = strlen(s);
-		if (len > 1 && s[len - 1] == '%') {
-			/* Reject inf/nan and anything that would overflow the int cast
-			 * (e.g. "1e40%"): converting such a value is undefined. */
-			double v = (double)dim * atof(s) / 100.0 + 0.5;
-			if (!isfinite(v) || v <= (double)INT_MIN || v >= (double)INT_MAX)
-				return default_val;
-			return (int)v;
-		}
+		char *endp = NULL;
+		double v = strtod(s, &endp);
+		if (endp == s)			/* no number at the front: reject */
+			return default_val;
+		while (*endp == ' ' || *endp == '\t')
+			endp++;
+		if (*endp == '%')
+			v = (double)dim * v / 100.0;	/* percentage of the dimension */
+		else if (*endp != '\0')		/* trailing junk ("12px", "ab"): reject */
+			return default_val;
+		/* Round to nearest in either direction, then reject inf/nan and any
+		 * value that would overflow the int cast (e.g. "1e40"). */
+		v += (v < 0.0) ? -0.5 : 0.5;
+		if (!isfinite(v) || v <= (double)INT_MIN || v >= (double)INT_MAX)
+			return default_val;
+		return (int)v;
 	}
 	return default_val;
 }

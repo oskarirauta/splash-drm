@@ -18,8 +18,7 @@
    "size": 16,
    "color": "#6b7280",
    "bg_color": "#ffffff08",
-   "padding": 14,
-   "max_lines": 14},
+   "padding": 14},
 
   {"cmd": "progress",
    "id": 0,

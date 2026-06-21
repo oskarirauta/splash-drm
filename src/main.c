@@ -81,7 +81,11 @@ static void print_usage(const char *prog) {
 		"                         PNG and exit; pair with --headless to avoid\n"
 		"                         touching the live console\n"
 		"  -q, --quiet            Silence all output (even errors)\n"
-		"  -v, -vv, -vvv          Increase verbosity (info / debug / trace)\n"
+		"  -v / -vv / -vvv        Log threshold: info / debug / trace. The\n"
+		"                         default (no flag) is error only; each level\n"
+		"                         also includes the lower ones, so warnings\n"
+		"                         already show at -v. (Repeats add up: -v -vv\n"
+		"                         is the same as -vvv.)\n"
 		"  --debug                Alias for -vv (debug verbosity)\n"
 		"  --log <target>         Log sink: auto (default), stderr, syslog, kmsg\n"
 		"  -V, --version          Print version and exit\n"
@@ -162,7 +166,7 @@ int load_config(const char *config_str) {
 	} else {
 		json_data = read_file(config_str);
 		if (!json_data) {
-			LOGW("cannot read config file: %s", config_str);
+			LOGE("cannot read config file: %s", config_str);
 			return -1;
 		}
 		needs_free = 1;
@@ -173,7 +177,7 @@ int load_config(const char *config_str) {
 		free(json_data);
 
 	if (!root) {
-		LOGW("invalid config JSON");
+		LOGE("invalid config JSON");
 		return -1;
 	}
 
@@ -191,7 +195,7 @@ int load_config(const char *config_str) {
 
 			if (slot >= 0 && slot < MAX_FONTS && path) {
 				if (font_load(path, size, slot) < 0) {
-					LOGW("could not load font %s to slot %d",
+					LOGE("could not load font %s to slot %d",
 					     path, slot);
 				} else {
 					LOGD("loaded font %s to slot %d (size %.1f)",
@@ -217,7 +221,7 @@ int process_startup_cmds(splash_state_t *st, const char *cmds_str,
 	} else {
 		json_data = read_file(cmds_str);
 		if (!json_data) {
-			LOGW("cannot read commands file: %s", cmds_str);
+			LOGE("cannot read commands file: %s", cmds_str);
 			return -1;
 		}
 		needs_free = 1;
@@ -228,7 +232,7 @@ int process_startup_cmds(splash_state_t *st, const char *cmds_str,
 		free(json_data);
 
 	if (!root) {
-		LOGW("invalid commands JSON");
+		LOGE("invalid commands JSON");
 		return -1;
 	}
 
@@ -240,7 +244,7 @@ int process_startup_cmds(splash_state_t *st, const char *cmds_str,
 	if (out_errors) *out_errors = errors;
 
 	if (errors > 0) {
-		LOGW("%d of %d startup command(s) failed", errors, total);
+		LOGE("%d of %d startup command(s) failed", errors, total);
 		return -1;
 	}
 	return 0;

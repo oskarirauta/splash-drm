@@ -265,6 +265,21 @@ static int cmd_version(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
+/*
+ * Liveness probe. A reply can only come from a live daemon, so this always
+ * answers {"status":"ok","running":true}; the "not running" case is observed by
+ * the client when the connection fails. splash-ctl uses this for `--running`
+ * and answers a bare {"cmd":"running"} with a clean boolean even when the daemon
+ * is down, so scripts get JSON instead of a connection error.
+ */
+static int cmd_running(splash_state_t *st, cJSON *args, int client_idx) {
+	(void)args;
+	cJSON *resp = create_response("ok", NULL);
+	cJSON_AddBoolToObject(resp, "running", 1);
+	send_response(st, client_idx, resp);
+	return 0;
+}
+
 static int cmd_ready(splash_state_t *st, cJSON *args, int client_idx) {
 	(void)args;
 	st->ready = 1;
@@ -1651,11 +1666,15 @@ static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
 	con->color     = get_color(args, "color", fresh ? rgb(255, 255, 255) : con->color);
 	con->bg_color  = get_color(args, "bg_color", fresh ? 0 : con->bg_color);
 	con->padding   = get_int(args, "padding", fresh ? 4 : con->padding);
+	con->autofit   = get_bool(args, "autofit", fresh ? 0 : con->autofit);
 	con->opacity   = get_float(args, "opacity", fresh ? 1.0f : con->opacity);
 	con->active    = 1;
 
-	/* max_lines: settable on creation; changing it resets the buffer. */
-	int new_max = get_int(args, "max_lines", fresh ? 32 : con->max_lines);
+	/* max_lines: settable on creation; changing it resets the buffer. The
+	 * lines[] ring is always CONSOLE_MAX_LINES wide, so defaulting to the full
+	 * capacity costs nothing and lets a tall console fill completely instead of
+	 * capping the visible history below what the box can show. */
+	int new_max = get_int(args, "max_lines", fresh ? CONSOLE_MAX_LINES : con->max_lines);
 	new_max = clamp(new_max, 1, CONSOLE_MAX_LINES);
 	if (fresh || new_max != con->max_lines) {
 		con->max_lines  = new_max;
@@ -2102,6 +2121,7 @@ static const cmd_entry_t cmd_table[] = {
 	{ "resume",          cmd_resume          },
 	{ "status",          cmd_status          },
 	{ "version",         cmd_version         },
+	{ "running",         cmd_running         },
 	{ "ready",           cmd_ready           },
 	{ "clear",           cmd_clear           },
 	{ "bg_color",        cmd_bg_color        },
