@@ -725,7 +725,7 @@ void kbd_process(splash_state_t *st);
 extern int g_validate_only;
 
 /* main.c helpers */
-int load_config(const char *config_str);
+int load_config(splash_state_t *st, const char *config_str);
 int process_startup_cmds(splash_state_t *st, const char *cmds_str,
                          int *out_total, int *out_errors);
 

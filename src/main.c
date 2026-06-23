@@ -156,8 +156,10 @@ static char *read_file(const char *path) {
 	return buf;
 }
 
-/* Load the optional config (currently just font slots). */
-int load_config(const char *config_str) {
+/* Load the scene document: font slots (loaded once at startup), the backdrop
+ * colour, and any declarative elements. Older fonts-only configs still work —
+ * the background/elements sections are simply absent. */
+int load_config(splash_state_t *st, const char *config_str) {
 	char *json_data = NULL;
 	int needs_free = 0;
 
@@ -206,6 +208,23 @@ int load_config(const char *config_str) {
 			}
 		}
 	}
+
+	/* Backdrop colour: a string ("#101418") or {"color": ...}. */
+	cJSON *bg = cJSON_GetObjectItem(root, "background");
+	if (bg) {
+		if (cJSON_IsString(bg))
+			st->bg_color = parse_color(bg->valuestring);
+		else if (cJSON_IsObject(bg)) {
+			const char *c = get_string(bg, "color", NULL);
+			if (c)
+				st->bg_color = parse_color(c);
+		}
+	}
+
+	/* Declarative scene: run the elements array as a startup batch. */
+	cJSON *elements = cJSON_GetObjectItem(root, "elements");
+	if (elements && cJSON_IsArray(elements))
+		process_json_batch(st, elements, -1, NULL, NULL);
 
 	cJSON_Delete(root);
 	return 0;
@@ -444,7 +463,7 @@ int main(int argc, char **argv) {
 		st.drm.mode.vdisplay = 1080;
 
 		int problems = 0, total = 0, errors = 0;
-		if (config_arg && load_config(config_arg) < 0) {
+		if (config_arg && load_config(&st, config_arg) < 0) {
 			LOGE("config: failed to load");
 			problems++;
 		}
@@ -473,7 +492,7 @@ int main(int argc, char **argv) {
 		LOGI("headless: rendering off-screen, console left visible");
 
 	if (config_arg) {
-		if (load_config(config_arg) < 0)
+		if (load_config(&st, config_arg) < 0)
 			LOGW("failed to load config");
 	}
 

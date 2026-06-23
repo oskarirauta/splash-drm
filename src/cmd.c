@@ -205,7 +205,7 @@ static int get_easing(cJSON *obj, const char *key, int default_val) {
  * ======================================================================== */
 
 static int cmd_exit(splash_state_t *st, cJSON *args, int client_idx) {
-	int delay_s = get_int(args, "delay", 0);
+	int delay_s = get_int(args, "timeout", 0);
 	send_response(st, client_idx, create_response("ok", NULL));
 	if (delay_s > 0) {
 		st->exit_at_ms = now_ms() + (uint64_t)delay_s * 1000u;
@@ -2125,76 +2125,138 @@ static int cmd_remove_qr(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static const cmd_entry_t cmd_table[] = {
-	{ "exit",            cmd_exit            },
-	{ "suspend",         cmd_suspend         },
-	{ "resume",          cmd_resume          },
-	{ "status",          cmd_status          },
-	{ "version",         cmd_version         },
-	{ "running",         cmd_running         },
-	{ "ready",           cmd_ready           },
-	{ "clear",           cmd_clear           },
-	{ "bg_color",        cmd_bg_color        },
-	{ "image",           cmd_image           },
-	{ "text",            cmd_text            },
-	{ "remove_text",     cmd_remove_text     },
-	{ "rect",            cmd_rect            },
-	{ "remove_rect",     cmd_remove_rect     },
-	{ "ellipse",         cmd_ellipse         },
-	{ "remove_ellipse",  cmd_remove_ellipse  },
-	{ "circle",          cmd_ellipse         },
-	{ "remove_circle",   cmd_remove_ellipse  },
-	{ "line",            cmd_line            },
-	{ "remove_line",     cmd_remove_line     },
-	{ "stepper",         cmd_stepper         },
-	{ "remove_stepper",  cmd_remove_stepper  },
-	{ "marquee",         cmd_marquee         },
-	{ "remove_marquee",  cmd_remove_marquee  },
-	{ "sprite",          cmd_sprite          },
-	{ "remove_sprite",   cmd_remove_sprite   },
-	{ "overlay",         cmd_overlay         },
-	{ "remove_overlay",  cmd_remove_overlay  },
-	{ "progress",        cmd_progress        },
-	{ "update_progress", cmd_update_progress },
-	{ "hide_progress",   cmd_hide_progress   },
-	{ "remove_progress", cmd_remove_progress },
-	{ "animate",         cmd_animate         },
-	{ "spinner",         cmd_spinner         },
-	{ "remove_spinner",  cmd_remove_spinner  },
-	{ "console",         cmd_console         },
-	{ "console_write",   cmd_console_write   },
-	{ "remove_console",  cmd_remove_console  },
-	{ "query",           cmd_query           },
-	{ "arc",             cmd_arc             },
-	{ "update_arc",      cmd_update_arc      },
-	{ "hide_arc",        cmd_hide_arc        },
-	{ "remove_arc",      cmd_remove_arc      },
-	{ "qr",              cmd_qr              },
-	{ "remove_qr",       cmd_remove_qr       },
-	{ NULL,              NULL                }
+/* {"background": "#101418"} or {"background": {"color": "#101418"}} */
+static int cmd_background(splash_state_t *st, cJSON *val, int client_idx) {
+	uint32_t color;
+	if (cJSON_IsString(val))
+		color = parse_color(val->valuestring);
+	else if (cJSON_IsObject(val))
+		color = get_color(val, "color", 0);
+	else {
+		send_response(st, client_idx,
+		              create_response("error", "invalid background"));
+		return -1;
+	}
+	st->bg_color     = color;
+	st->needs_render = 1;
+	send_response(st, client_idx, create_response("ok", NULL));
+	return 0;
+}
+
+/* Daemon lifecycle and queries, reached via {"system": ...}. */
+static const cmd_entry_t system_table[] = {
+	{ "exit",    cmd_exit    },
+	{ "suspend", cmd_suspend },
+	{ "resume",  cmd_resume  },
+	{ "clear",   cmd_clear   },
+	{ "status",  cmd_status  },
+	{ "version", cmd_version },
+	{ "running", cmd_running },
+	{ "ready",   cmd_ready   },
+	{ "query",   cmd_query   },
+	{ NULL,      NULL        }
 };
 
-/* Dispatch a single command object to its handler. */
-static int process_single_cmd(splash_state_t *st, cJSON *cmd_obj,
-                               int client_idx) {
-	const char *cmd_name = get_string(cmd_obj, "cmd", NULL);
-	if (!cmd_name) {
-		if (client_idx >= 0)
-			send_response(st, client_idx,
-			              create_response("error", "missing cmd"));
+/*
+ * {"system": "exit"}                     string shorthand (no params)
+ * {"system": {"action": "exit", ...}}    action object carrying parameters
+ */
+static int cmd_system(splash_state_t *st, cJSON *val, int client_idx) {
+	const char *action = NULL;
+	cJSON      *params = NULL;
+	if (cJSON_IsString(val)) {
+		action = val->valuestring;
+	} else if (cJSON_IsObject(val)) {
+		action = get_string(val, "action", NULL);
+		params = val;
+	}
+	if (!action) {
+		send_response(st, client_idx,
+		              create_response("error", "missing system action"));
 		return -1;
 	}
 
-	for (int i = 0; cmd_table[i].name; i++) {
-		if (strcmp(cmd_name, cmd_table[i].name) == 0)
-			return cmd_table[i].handler(st, cmd_obj, client_idx);
+	for (int i = 0; system_table[i].name; i++)
+		if (strcmp(action, system_table[i].name) == 0)
+			return system_table[i].handler(st, params, client_idx);
+
+	if (client_idx >= 0)
+		send_response(st, client_idx,
+		              create_response("error", "unknown system action"));
+	else
+		LOGW("unknown system action: %s", action);
+	return -1;
+}
+
+/* Element types, reached via a single-key {"<type>": {...}} message. */
+static const cmd_entry_t elem_table[] = {
+	{ "image",    cmd_image    },
+	{ "text",     cmd_text     },
+	{ "rect",     cmd_rect     },
+	{ "ellipse",  cmd_ellipse  },
+	{ "circle",   cmd_ellipse  },
+	{ "line",     cmd_line     },
+	{ "stepper",  cmd_stepper  },
+	{ "marquee",  cmd_marquee  },
+	{ "sprite",   cmd_sprite   },
+	{ "overlay",  cmd_overlay  },
+	{ "progress", cmd_progress },
+	{ "spinner",  cmd_spinner  },
+	{ "console",  cmd_console  },
+	{ "arc",      cmd_arc      },
+	{ "qr",       cmd_qr       },
+	{ NULL,       NULL         }
+};
+
+/*
+ * Dispatch a single-key message. The one top-level key is the discriminator:
+ *   {"<type>": {...}}    an element operation (create / merge / remove)
+ *   {"system": ...}      daemon lifecycle or a query
+ *   {"background": ...}  the backdrop colour
+ * Any extra top-level keys beyond the first are ignored.
+ */
+static int process_single_cmd(splash_state_t *st, cJSON *msg,
+                               int client_idx) {
+	if (!cJSON_IsObject(msg) || !msg->child) {
+		if (client_idx >= 0)
+			send_response(st, client_idx,
+			              create_response("error",
+			                              "expected a single-key object"));
+		else
+			LOGW("command is not a single-key object");
+		return -1;
+	}
+
+	cJSON      *val = msg->child;	/* first member carries key + value */
+	const char *key = val->string;
+	if (!key)
+		return -1;
+
+	if (strcmp(key, "system") == 0)
+		return cmd_system(st, val, client_idx);
+	if (strcmp(key, "background") == 0)
+		return cmd_background(st, val, client_idx);
+
+	for (int i = 0; elem_table[i].name; i++) {
+		if (strcmp(key, elem_table[i].name) == 0) {
+			if (!cJSON_IsObject(val)) {
+				if (client_idx >= 0)
+					send_response(st, client_idx,
+					              create_response("error",
+					                  "element value must be an object"));
+				else
+					LOGW("element '%s' value is not an object", key);
+				return -1;
+			}
+			return elem_table[i].handler(st, val, client_idx);
+		}
 	}
 
 	if (client_idx >= 0)
 		send_response(st, client_idx,
-		              create_response("error", "unknown command"));
+		              create_response("error", "unknown element type"));
 	else
-		LOGW("unknown startup command: %s", cmd_name);
+		LOGW("unknown element type: %s", key);
 	return -1;
 }
 

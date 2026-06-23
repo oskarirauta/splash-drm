@@ -121,7 +121,7 @@ static int extract_json_string(const char *json, const char *key,
  */
 static int print_daemon_version(void) {
 	char reply[4096];
-	ssize_t total = send_and_recv("{\"cmd\":\"version\"}", reply, sizeof(reply), 0);
+	ssize_t total = send_and_recv("{\"system\":\"version\"}", reply, sizeof(reply), 0);
 	if (total < 0)
 		return 1;			/* connect/write already reported */
 
@@ -152,7 +152,7 @@ static int print_daemon_version(void) {
  */
 static int report_running(int json) {
 	char reply[4096];
-	int up = send_and_recv("{\"cmd\":\"running\"}", reply, sizeof(reply), 1) >= 0;
+	int up = send_and_recv("{\"system\":\"running\"}", reply, sizeof(reply), 1) >= 0;
 	if (json)
 		printf(up ? "{\"running\":true}\n" : "{\"running\":false}\n");
 	else
@@ -163,7 +163,7 @@ static int report_running(int json) {
 /* A bare {"cmd":"running"} is answered locally (see report_running) so it always
  * yields a boolean rather than a connection error. Detect it tolerantly. */
 static int is_running_query(const char *s) {
-	return strstr(s, "\"cmd\"") && strstr(s, "\"running\"");
+	return strstr(s, "\"system\"") && strstr(s, "\"running\"");
 }
 
 static int send_json(const char *json_str) {
@@ -367,7 +367,7 @@ int main(int argc, char **argv) {
 			return report_running(0);	/* "running" / "not running" */
 		} else if (strcmp(argv[arg_offset], "--status") == 0) {
 			raw_mode = 1;			/* show the status JSON, not just OK */
-			return send_json("{\"cmd\":\"status\"}") < 0 ? 1 : 0;
+			return send_json("{\"system\":\"status\"}") < 0 ? 1 : 0;
 		} else if (strcmp(argv[arg_offset], "--exit") == 0) {
 			action = "exit";
 			arg_offset++;
@@ -405,12 +405,13 @@ int main(int argc, char **argv) {
 
 	/* An action flag is terminal: build its JSON and send it. */
 	if (action) {
-		char buf[64];
+		char buf[80];
 		if (timeout >= 0)
 			snprintf(buf, sizeof(buf),
-			         "{\"cmd\":\"exit\",\"delay\":%d}", timeout);
+			         "{\"system\":{\"action\":\"exit\",\"timeout\":%d}}",
+			         timeout);
 		else
-			snprintf(buf, sizeof(buf), "{\"cmd\":\"%s\"}", action);
+			snprintf(buf, sizeof(buf), "{\"system\":\"%s\"}", action);
 		return send_json(buf) < 0 ? 1 : 0;
 	}
 
