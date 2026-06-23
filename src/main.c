@@ -66,8 +66,10 @@ static void print_usage(const char *prog) {
 		"Arguments:\n"
 		"  drm_device             DRM device path (e.g. /dev/dri/card0)\n\n"
 		"Options:\n"
-		"  --config <file|json>   Load configuration (fonts, defaults)\n"
-		"  --cmds <file|json>     Execute initial commands on startup\n"
+		"  --config <file|json>   Load the scene document (fonts, background,\n"
+		"                         elements); the splash is drawn from it\n"
+		"  -D NAME=value          Define a variable; ${NAME} in the config\n"
+		"                         document is expanded before it is parsed\n"
 		"  --timeout <seconds>    Exit if idle for this long (watchdog)\n"
 		"  --fork                 Fork to background; parent exits immediately\n"
 		"                         (recommended for initramfs use — guarantees\n"
@@ -75,11 +77,11 @@ static void print_usage(const char *prog) {
 		"  --headless             Initialise DRM but never program the CRTC, so\n"
 		"                         the console stays visible; renders off-screen\n"
 		"                         only (for debugging logs live during boot)\n"
-		"  --check                Validate --config/--cmds without opening DRM\n"
-		"                         and exit (0 = ok); for testing boot configs\n"
-		"  --dump <file.png>      Render one frame (from --config/--cmds) to a\n"
-		"                         PNG and exit; pair with --headless to avoid\n"
-		"                         touching the live console\n"
+		"  --check                Validate --config without opening DRM and exit\n"
+		"                         (0 = ok); for testing boot configs\n"
+		"  --dump <file.png>      Render one frame (from --config) to a PNG and\n"
+		"                         exit; pair with --headless to avoid touching\n"
+		"                         the live console\n"
 		"  -q, --quiet            Silence all output (even errors)\n"
 		"  -v / -vv / -vvv        Log threshold: info / debug / trace. The\n"
 		"                         default (no flag) is error only; each level\n"
@@ -91,30 +93,21 @@ static void print_usage(const char *prog) {
 		"  -V, --version          Print version and exit\n"
 		"  -h, --help             Print this summary and exit\n"
 		"  --help <cmd>           Print full parameter list for a command\n\n"
-		"Config JSON format:\n"
-		"  {\"fonts\": [\n"
-		"    {\"slot\": 0, \"path\": \"DejaVuSans.ttf\", \"size\": 24}\n"
-		"  ]}\n\n"
-		"Available commands:\n"
-		"  clear       bg_color         image\n"
-		"  text        remove_text\n"
-		"  rect        remove_rect\n"
-		"  ellipse     circle           remove_ellipse  remove_circle\n"
-		"  line        remove_line\n"
-		"  stepper     remove_stepper\n"
-		"  marquee     remove_marquee\n"
-		"  sprite      remove_sprite\n"
-		"  overlay     remove_overlay\n"
-		"  progress    update_progress  hide_progress\n"
-		"  arc         update_arc       hide_arc\n"
-		"  spinner     console          console_write  remove_console\n"
-		"  qr          remove_qr\n"
-		"  animate     query\n"
-		"  suspend     resume           status         ready           exit\n\n"
+		"Scene document (--config):\n"
+		"  {\"version\": 1,\n"
+		"   \"fonts\": [{\"slot\": 0, \"path\": \"DejaVuSans.ttf\", \"size\": 24}],\n"
+		"   \"background\": \"#0b0e14\",\n"
+		"   \"elements\": [{\"text\": {\"id\": 0, \"text\": \"Booting…\"}}]}\n\n"
+		"Element types (each a single-key object, e.g. {\"progress\": {...}}):\n"
+		"  image    text     rect     ellipse/circle   line     stepper\n"
+		"  marquee  sprite   overlay  progress         arc      spinner\n"
+		"  console  qr\n"
+		"System ops: {\"system\":\"exit|suspend|resume|clear|status|...\"}\n"
+		"Backdrop:   {\"background\":\"#rrggbb\"}\n\n"
 		"Run '%s --help <cmd>' for full parameter details.\n\n"
 		"Examples:\n"
 		"  %s /dev/dri/card0\n"
-		"  %s /dev/dri/card0 --config /etc/splash/config.json --cmds /etc/splash/boot.json\n"
+		"  %s /dev/dri/card0 --config /etc/splash/scene.json\n"
 		"  %s --help arc\n",
 		SPLASH_VERSION, prog, prog, prog, prog, prog);
 }
@@ -232,49 +225,6 @@ int load_config(splash_state_t *st, const char *config_str) {
 	return errors;	/* >=0 element problems; -1 only on a load failure above */
 }
 
-/* Run the optional startup command batch (client_idx -1: no replies).
- * out_total/out_errors (optional) report how many commands ran and failed. */
-int process_startup_cmds(splash_state_t *st, const char *cmds_str,
-                         int *out_total, int *out_errors) {
-	char *json_data = NULL;
-	int needs_free = 0;
-
-	if (is_json_string(cmds_str)) {
-		json_data = (char *)cmds_str;
-	} else {
-		json_data = read_file(cmds_str);
-		if (!json_data) {
-			LOGE("cannot read commands file: %s", cmds_str);
-			return -1;
-		}
-		needs_free = 1;
-	}
-
-	cJSON *root = cJSON_Parse(json_data);
-	if (needs_free)
-		free(json_data);
-
-	if (!root) {
-		LOGE("invalid commands JSON");
-		return -1;
-	}
-
-	json_substitute(root);
-
-	int total = 0, errors = 0;
-	process_json_batch(st, root, -1, &total, &errors);
-	cJSON_Delete(root);
-
-	if (out_total)  *out_total  = total;
-	if (out_errors) *out_errors = errors;
-
-	if (errors > 0) {
-		LOGE("%d of %d startup command(s) failed", errors, total);
-		return -1;
-	}
-	return 0;
-}
-
 /* ========================================================================
  * Daemonize
  * ======================================================================== */
@@ -330,7 +280,6 @@ int main(int argc, char **argv) {
 
 	const char *device     = argv[1];
 	const char *config_arg = NULL;
-	const char *cmds_arg   = NULL;
 	int         fork_daemon = 0;
 	int         headless    = 0;
 	int         check_mode  = 0;
@@ -368,9 +317,6 @@ int main(int argc, char **argv) {
 	for (int i = 2; i < argc; i++) {
 		if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
 			config_arg = argv[++i];
-		}
-		else if (strcmp(argv[i], "--cmds") == 0 && i + 1 < argc) {
-			cmds_arg = argv[++i];
 		}
 		else if ((strcmp(argv[i], "-D") == 0 ||
 		          strcmp(argv[i], "--define") == 0) && i + 1 < argc) {
@@ -453,7 +399,7 @@ int main(int argc, char **argv) {
 	log_init(log_level, log_sink);
 
 	if (check_mode) {
-		/* Validate --config/--cmds without opening DRM or the socket, so a
+		/* Validate --config without opening DRM or the socket, so a
 		 * boot.json can be checked on a build host. Surface warnings even at
 		 * the default (ERROR) threshold. */
 		if (log_threshold < LOG_INFO)
@@ -464,7 +410,7 @@ int main(int argc, char **argv) {
 		st.drm.mode.hdisplay = 1920;
 		st.drm.mode.vdisplay = 1080;
 
-		int problems = 0, total = 0, errors = 0;
+		int problems = 0;
 		if (config_arg) {
 			int r = load_config(&st, config_arg);
 			if (r < 0) {
@@ -474,16 +420,10 @@ int main(int argc, char **argv) {
 				problems += r;	/* element problems in the scene document */
 			}
 		}
-		if (cmds_arg) {
-			if (process_startup_cmds(&st, cmds_arg, &total, &errors) < 0 &&
-			    total == 0)
-				problems++;		/* read/parse failure: nothing ran */
-			problems += errors;
-		}
 
 		font_unload_all();
-		fprintf(stderr, "check: %d command(s) parsed, %d problem(s) - %s\n",
-		        total, problems, problems ? "FAILED" : "OK");
+		fprintf(stderr, "check: %d problem(s) - %s\n",
+		        problems, problems ? "FAILED" : "OK");
 		return problems ? 1 : 0;
 	}
 
@@ -519,9 +459,6 @@ int main(int argc, char **argv) {
 	st.running      = 1;
 	st.needs_render = 1;
 	st.frozen       = 0;
-
-	if (cmds_arg)
-		process_startup_cmds(&st, cmds_arg, NULL, NULL);
 
 	/* Pick up any animation/spinner started by the startup commands, so
 	 * the first poll already uses the short (RENDER_FPS) timeout. */
@@ -623,7 +560,7 @@ int main(int argc, char **argv) {
 			break;
 		}
 
-		/* Delayed exit: triggered by {"cmd":"exit","delay":<seconds>}. */
+		/* Delayed exit: {"system":{"action":"exit","timeout":<seconds>}}. */
 		if (st.exit_at_ms > 0 && now_ms() >= st.exit_at_ms) {
 			exit_reason = "delayed exit elapsed";
 			break;

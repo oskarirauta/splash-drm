@@ -269,7 +269,7 @@ static int cmd_version(splash_state_t *st, cJSON *args, int client_idx) {
  * Liveness probe. A reply can only come from a live daemon, so this always
  * answers {"status":"ok","running":true}; the "not running" case is observed by
  * the client when the connection fails. splash-ctl uses this for `--running`
- * and answers a bare {"cmd":"running"} with a clean boolean even when the daemon
+ * and answers a bare {"system":"running"} with a clean boolean even when the daemon
  * is down, so scripts get JSON instead of a connection error.
  */
 static int cmd_running(splash_state_t *st, cJSON *args, int client_idx) {
@@ -301,15 +301,8 @@ static int cmd_clear(splash_state_t *st, cJSON *args, int client_idx) {
 }
 
 /* ========================================================================
- * Background Commands
+ * Background Image
  * ======================================================================== */
-
-static int cmd_bg_color(splash_state_t *st, cJSON *args, int client_idx) {
-	st->bg_color = get_color(args, "color", 0);
-	st->needs_render = 1;
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /*
  * Set the background image. With "crossfade" > 0 and a background already
@@ -406,7 +399,7 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
 		}
 	}
 
-	/* remove:true deletes the element in place (same as remove_text). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		te->active  = 0;
 		te->text[0] = '\0';
@@ -470,17 +463,6 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_text(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	text_element_t *te = text_find(st, id);
-	if (te) {
-		te->active  = 0;
-		te->text[0] = '\0';
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Rectangle Commands
@@ -504,7 +486,7 @@ static int cmd_rect(splash_state_t *st, cJSON *args, int client_idx) {
 		return -1;
 	}
 
-	/* remove:true deletes the element in place (same as remove_rect). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		re->active = 0;
 		st->needs_render = 1;
@@ -558,16 +540,6 @@ static int cmd_rect(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_rect(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	rect_element_t *re = rect_find(st, id);
-	if (re) {
-		re->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Ellipse / Circle Commands
@@ -624,16 +596,6 @@ static int cmd_ellipse(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_ellipse(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	ellipse_t *e = ellipse_find(st, id);
-	if (e) {
-		e->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Line Commands
@@ -688,16 +650,6 @@ static int cmd_line(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_line(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	line_t *l = line_find(st, id);
-	if (l) {
-		l->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Stepper Commands
@@ -764,16 +716,6 @@ static int cmd_stepper(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_stepper(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	stepper_t *s = stepper_find(st, id);
-	if (s) {
-		s->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Marquee Commands
@@ -845,16 +787,6 @@ static int cmd_marquee(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_marquee(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	marquee_t *m = marquee_find(st, id);
-	if (m) {
-		m->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Sprite (frame animation) Commands
@@ -933,17 +865,6 @@ static int cmd_sprite(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_sprite(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	sprite_t *sp = sprite_find(st, id);
-	if (sp) {
-		sprite_clear_frames(sp);
-		sp->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Image Overlay Commands
@@ -967,7 +888,7 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 		return -1;
 	}
 
-	/* remove:true deletes the element in place (same as remove_overlay). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		free_image(&ov->img);
 		ov->active = 0;
@@ -1026,17 +947,6 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_overlay(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	image_overlay_t *ov = overlay_find(st, id);
-	if (ov) {
-		free_image(&ov->img);
-		ov->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Progress Bar Commands
@@ -1060,7 +970,7 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 		return -1;
 	}
 
-	/* remove:true deletes the element in place (same as remove_progress). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		memset(pb, 0, sizeof(*pb));
 		st->needs_render = 1;
@@ -1158,70 +1068,18 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_update_progress(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	progress_bar_t *pb = progress_find(st, id);
-	if (!pb) {
-		send_response(st, client_idx,
-		              create_response("error", "not found"));
-		return -1;
-	}
-
-	/* Only the value changes here - opacity and any running animation
-	 * are deliberately left untouched, so a bar can fade while it fills. */
-	pb->value = fclamp(get_float(args, "value", 0), 0.0f, 1.0f);
-
-	pb->show_percent = get_bool(args, "show_percent", pb->show_percent);
-
-	/* Optionally switch in/out of indeterminate mode - e.g. start a load
-	 * indeterminate, then flip to a real bar once the size is known. */
-	cJSON *ind = cJSON_GetObjectItem(args, "indeterminate");
-	if (ind) {
-		int was = pb->indeterminate;
-		pb->indeterminate = cJSON_IsTrue(ind);
-		if (pb->indeterminate && !was)
-			pb->indet_start_ms = now_ms();
-	}
-
-	st->needs_render = 1;
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
-
-static int cmd_hide_progress(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	progress_bar_t *pb = progress_find(st, id);
-	if (pb) {
-		pb->active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
-
-static int cmd_remove_progress(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	progress_bar_t *pb = progress_find(st, id);
-	if (pb) {
-		memset(pb, 0, sizeof(*pb));
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
-
 /* ========================================================================
- * Animation Command
+ * Animation
  *
- * Animate an element's opacity over time:
- *   {"cmd":"animate","type":"text","id":1,"property":"opacity",
- *    "from":0,"to":1,"duration":400,"easing":"ease_out",
- *    "remove_on_end":false,"repeat":false}
+ * apply_animate() runs from the element dispatch when a message carries an
+ * "animate" object, after the element's own fields are applied:
+ *   {"text":{"id":1,"animate":{"property":"opacity","from":0,"to":1,
+ *            "duration":400,"easing":"ease_out","remove_on_end":false}}}
  *
- * `type` is text | rect | progress | overlay | spinner. `from` defaults
- * to the element's current opacity. With "repeat" the animation
- * ping-pongs forever; with "remove_on_end" the element is deactivated
- * once a (non-repeating) animation finishes.
+ * "property" is opacity | x | y | w | h | color (whichever the element type
+ * supports). "from" defaults to the element's current value. "repeat"
+ * ping-pongs forever; "remove_on_end" deactivates the element once a
+ * non-repeating tween finishes.
  * ======================================================================== */
 
 /*
@@ -1455,12 +1313,12 @@ static int apply_animate(splash_state_t *st, const char *type, int id,
  * Spinner Command
  *
  * An Apple-style rotating boot indicator:
- *   {"cmd":"spinner","id":0,"x":-1,"y":-1,"radius":40,"color":"#ffffff",
- *    "period":900}
- *   {"cmd":"spinner","id":0,"hidden":true}            configure, stay hidden
- *   {"cmd":"spinner","id":0,"action":"hide"}
- *   {"cmd":"spinner","id":0,"action":"show_animated","duration":300}
- *   {"cmd":"spinner","id":0,"action":"hide_animated","duration":300}
+ *   {"spinner":{"id":0,"x":-1,"y":-1,"radius":40,"color":"#ffffff",
+ *    "period":900}}
+ *   {"spinner":{"id":0,"hidden":true}}            configure, stay hidden
+ *   {"spinner":{"id":0,"action":"hide"}}
+ *   {"spinner":{"id":0,"action":"show_animated","duration":300}}
+ *   {"spinner":{"id":0,"action":"hide_animated","duration":300}}
  *
  * A spinner's slot survives "hide": a later show that omits a field keeps
  * the previously configured value, so only what is given changes.
@@ -1530,7 +1388,7 @@ static int cmd_spinner(splash_state_t *st, cJSON *args, int client_idx) {
 		return -1;
 	}
 
-	/* remove:true deletes the element in place (same as remove_spinner). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		sp->active      = 0;
 		sp->anim.active = 0;
@@ -1607,17 +1465,6 @@ static int cmd_spinner(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_spinner(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	spinner_t *sp = spinner_find(st, id);
-	if (sp) {
-		sp->active      = 0;
-		sp->anim.active = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Command Dispatch
@@ -1674,7 +1521,7 @@ static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
 		return -1;
 	}
 
-	/* remove:true deletes the element in place (same as remove_console). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		con->active = 0;
 		st->needs_render = 1;
@@ -1733,16 +1580,6 @@ static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_console(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	console_t *con = console_find(st, id);
-	if (con) {
-		con->active      = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * Query – inspect current element state
@@ -1919,7 +1756,7 @@ static int cmd_arc(splash_state_t *st, cJSON *args, int client_idx) {
 		return -1;
 	}
 
-	/* remove:true deletes the element in place (same as remove_arc). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		memset(ab, 0, sizeof(*ab));
 		st->needs_render = 1;
@@ -1978,46 +1815,8 @@ static int cmd_arc(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_update_arc(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	arc_bar_t *ab = arc_find(st, id);
-	if (!ab) {
-		send_response(st, client_idx,
-		              create_response("error", "arc not found"));
-		return -1;
-	}
 
-	ab->value = fclamp(get_float(args, "value", ab->value), 0.0f, 1.0f);
 
-	const char *bar = get_string(args, "bar_color", NULL);
-	if (bar) ab->bar_color = parse_color(bar);
-
-	st->needs_render = 1;
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
-
-static int cmd_hide_arc(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	arc_bar_t *ab = arc_find(st, id);
-	if (ab) {
-		ab->active       = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
-
-static int cmd_remove_arc(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	arc_bar_t *ab = arc_find(st, id);
-	if (ab) {
-		memset(ab, 0, sizeof(*ab));
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* ========================================================================
  * QR Code Commands
@@ -2041,7 +1840,7 @@ static int cmd_qr(splash_state_t *st, cJSON *args, int client_idx) {
 		return -1;
 	}
 
-	/* remove:true deletes the element in place (same as remove_qr). */
+	/* remove:true deletes the element in place. */
 	if (get_bool(args, "remove", 0)) {
 		qr->active = 0;
 		st->needs_render = 1;
@@ -2098,22 +1897,6 @@ static int cmd_qr(splash_state_t *st, cJSON *args, int client_idx) {
 	return 0;
 }
 
-static int cmd_remove_qr(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	if (id < 0) {
-		send_response(st, client_idx,
-		              create_response("error", "missing id"));
-		return -1;
-	}
-
-	qr_element_t *qr = qr_find(st, id);
-	if (qr) {
-		qr->active       = 0;
-		st->needs_render = 1;
-	}
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
 
 /* {"background": "#101418"} or {"background": {"color": "#101418"}} */
 static int cmd_background(splash_state_t *st, cJSON *val, int client_idx) {

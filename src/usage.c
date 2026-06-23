@@ -31,7 +31,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity     float    master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the element (like remove_text).\n");
+		"deletes the element.\n");
 	} else if (strcmp(cmd, "rect") == 0) {
 		fprintf(stderr,
 		"rect — add or update a rectangle\n\n"
@@ -53,7 +53,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity      float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the element (like remove_rect).\n");
+		"deletes the element.\n");
 	} else if (strcmp(cmd, "ellipse") == 0 || strcmp(cmd, "circle") == 0) {
 		fprintf(stderr,
 		"ellipse (alias: circle) — add or update an ellipse / circle\n\n"
@@ -66,7 +66,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity      float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the element (like remove_ellipse).\n");
+		"deletes the element.\n");
 	} else if (strcmp(cmd, "line") == 0) {
 		fprintf(stderr,
 		"line — add or update a straight line / divider\n\n"
@@ -79,7 +79,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity      float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the element (like remove_line).\n");
+		"deletes the element.\n");
 	} else if (strcmp(cmd, "stepper") == 0) {
 		fprintf(stderr,
 		"stepper — add or update a step / boot-stage indicator\n\n"
@@ -98,7 +98,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity      float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the element (like remove_stepper).\n");
+		"deletes the element.\n");
 	} else if (strcmp(cmd, "marquee") == 0) {
 		fprintf(stderr,
 		"marquee — add or update horizontally-scrolling text\n\n"
@@ -114,7 +114,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity      float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the element (like remove_marquee).\n");
+		"deletes the element.\n");
 	} else if (strcmp(cmd, "sprite") == 0) {
 		fprintf(stderr,
 		"sprite — add or update a frame animation (cycled images)\n\n"
@@ -129,7 +129,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity      float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged; \"frames\" reloads only\n"
 		"when given (otherwise the running animation is kept). \"replace\":true\n"
-		"resets to defaults; \"remove\":true deletes (like remove_sprite).\n");
+		"resets to defaults; \"remove\":true deletes.\n");
 	} else if (strcmp(cmd, "overlay") == 0) {
 		fprintf(stderr,
 		"overlay — add or update an image overlay\n\n"
@@ -146,7 +146,7 @@ void print_cmd_help(const char *cmd) {
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value, and the image is kept unless a new path is given).\n"
 		"\"replace\":true resets to defaults first; \"remove\":true deletes the\n"
-		"element (like remove_overlay).\n");
+		"element.\n");
 	} else if (strcmp(cmd, "progress") == 0) {
 		fprintf(stderr,
 		"progress — create or reconfigure a horizontal progress bar\n\n"
@@ -174,9 +174,8 @@ void print_cmd_help(const char *cmd) {
 		"  opacity         float  master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the bar.\n"
-		"Related: update_progress (value), hide_progress (keep config),\n"
-		"remove_progress (free the slot).\n");
+		"deletes the bar. To update only the value, re-send with the id and\n"
+		"\"value\".\n");
 	} else if (strcmp(cmd, "arc") == 0) {
 		fprintf(stderr,
 		"arc — create or reconfigure a circular/arc progress bar\n\n"
@@ -202,9 +201,8 @@ void print_cmd_help(const char *cmd) {
 		"  opacity         float  master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the arc.\n"
-		"Related: update_arc (value), hide_arc (keep config),\n"
-		"remove_arc (free the slot).\n");
+		"deletes the arc. To update only the value, re-send with the id and\n"
+		"\"value\".\n");
 	} else if (strcmp(cmd, "spinner") == 0) {
 		fprintf(stderr,
 		"spinner — create/show/hide an Apple-style rotating spinner\n\n"
@@ -223,9 +221,8 @@ void print_cmd_help(const char *cmd) {
 		"  opacity     float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the spinner.\n"
-		"Related: remove_spinner — deactivate the spinner in place (use\n"
-		"action:\"hide\" instead to keep the slot configuration).\n");
+		"deletes the spinner; action:\"hide\" instead keeps the slot configured\n"
+		"for a later show.\n");
 	} else if (strcmp(cmd, "console") == 0) {
 		fprintf(stderr,
 		"console — create or reconfigure a scrolling log area\n\n"
@@ -241,13 +238,11 @@ void print_cmd_help(const char *cmd) {
 		"                      full log fills the box with no leftover gap\n"
 		"  max_lines   int     ring buffer capacity (default & max: 64)\n"
 		"  opacity     float   master alpha 0.0-1.0\n\n"
+		"  write       string  append a log line; \\n splits into multiple lines\n\n"
 		"On an existing id, supplied console fields are merged (others keep\n"
 		"their current value). \"replace\":true resets to defaults first;\n"
-		"\"remove\":true deletes the console (like remove_console).\n\n"
-		"console_write — push text into a console element\n\n"
-		"  id          int     console id (required)\n"
-		"  text        string  text to append; \\n splits into multiple lines\n"
-		"  color       color   optional per-line colour (default: console colour)\n");
+		"\"remove\":true deletes the console. When \"write\" is present, \"color\"\n"
+		"colours that line instead of setting the console's default text colour.\n");
 	} else if (strcmp(cmd, "qr") == 0) {
 		fprintf(stderr,
 		"qr — create or update a QR code element\n\n"
@@ -264,7 +259,7 @@ void print_cmd_help(const char *cmd) {
 		"  opacity     float   master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
-		"deletes the element (like remove_qr).\n");
+		"deletes the element.\n");
 	} else if (strcmp(cmd, "image") == 0) {
 		fprintf(stderr,
 		"image — set the background image\n\n"
@@ -275,12 +270,12 @@ void print_cmd_help(const char *cmd) {
 		"  crossfade   int     fade duration in ms (0 = instant)\n");
 	} else if (strcmp(cmd, "animate") == 0) {
 		fprintf(stderr,
-		"animate — animate an element's opacity\n\n"
-		"  type         string  element type: text, rect, overlay, progress,\n"
-		"                       arc, spinner, console, qr\n"
-		"  id           int     element id\n"
-		"  from         float   start opacity (default: current)\n"
-		"  to           float   end opacity\n"
+		"animate — tween a property of an element\n\n"
+		"Not a standalone command: an \"animate\" object on an element op, e.g.\n"
+		"  {\"text\":{\"id\":0,\"animate\":{\"to\":0,\"duration\":400}}}\n\n"
+		"  property     string  opacity (default), x, y, w, h, or color\n"
+		"  from         float   start value (default: the element's current)\n"
+		"  to           float   end value\n"
 		"  duration     int     duration in ms\n"
 		"  easing       string  linear, ease_in, ease_out, ease_in_out\n"
 		"  repeat       bool    loop animation (ping-pong)\n"
@@ -320,7 +315,7 @@ void print_cmd_help(const char *cmd) {
 		"running — liveness probe (since 4.0.2)\n\n"
 		"Takes no parameters. A live daemon always replies:\n"
 		"  running     bool    always true (only a running daemon can answer)\n\n"
-		"Meant for the 'splash-ctl --running' / 'splash-ctl '{\"cmd\":\"running\"}''\n"
+		"Meant for the 'splash-ctl --running' / 'splash-ctl '{\"system\":\"running\"}''\n"
 		"shortcuts, which report the daemon's state without ever failing on a\n"
 		"connection error: --running prints 'running' or 'not running' and exits\n"
 		"0 or 1; the raw command always prints {\"running\":true} or\n"
@@ -329,14 +324,16 @@ void print_cmd_help(const char *cmd) {
 	} else if (strcmp(cmd, "exit") == 0) {
 		fprintf(stderr,
 		"exit — request a clean shutdown of the daemon\n\n"
-		"  delay       int     seconds to wait before exiting (default: 0)\n\n"
-		"Without 'delay' the daemon exits immediately after sending the reply.\n"
-		"With 'delay' the daemon keeps rendering for that many seconds, then\n"
-		"shuts down. Animations and commands continue to work during the delay,\n"
+		"A system op: {\"system\":\"exit\"} or, with a delay,\n"
+		"{\"system\":{\"action\":\"exit\",\"timeout\":N}}.\n\n"
+		"  timeout     int     seconds to keep rendering before exiting (default 0)\n\n"
+		"Without 'timeout' the daemon exits immediately after sending the reply.\n"
+		"With 'timeout' the daemon keeps rendering for that many seconds, then\n"
+		"shuts down. Animations and commands continue to work during the wait,\n"
 		"so you can display a final message or fade out before the process ends.\n\n"
 		"Example: show 'System ready' and exit after 3 seconds\n"
-		"  splash-ctl '{\"cmd\":\"text\",\"id\":99,\"text\":\"System ready\"}'\n"
-		"  splash-ctl '{\"cmd\":\"exit\",\"delay\":3}'\n");
+		"  splash-ctl '{\"text\":{\"id\":99,\"text\":\"System ready\"}}'\n"
+		"  splash-ctl '{\"system\":{\"action\":\"exit\",\"timeout\":3}}'\n");
 	} else {
 		fprintf(stderr, "No detailed help available for '%s'.\n"
 		                "Run with -h for the command list.\n", cmd);

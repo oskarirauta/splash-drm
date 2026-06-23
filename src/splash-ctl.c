@@ -1,9 +1,10 @@
 /*
  * splash-ctl.c - JSON control client for the splash-drm daemon.
  *
- * Connects to the daemon's abstract UNIX socket, sends one JSON command
- * (a single object or an array of objects), prints the reply, and exits.
- * The JSON is taken from the command line or, with --file, from a file.
+ * Connects to the daemon's abstract UNIX socket, sends one JSON message
+ * (a single-key object or an array of them), prints the reply, and exits.
+ * The JSON comes from an inline argument, --file <path> (- for stdin), or a
+ * piped stdin. -D NAME=value expands ${NAME} tokens before sending.
  */
 
 #include <stdio.h>
@@ -160,7 +161,7 @@ static int report_running(int json) {
 	return up ? 0 : 1;
 }
 
-/* A bare {"cmd":"running"} is answered locally (see report_running) so it always
+/* A bare {"system":"running"} is answered locally (see report_running) so it always
  * yields a boolean rather than a connection error. Detect it tolerantly. */
 static int is_running_query(const char *s) {
 	return strstr(s, "\"system\"") && strstr(s, "\"running\"");
@@ -265,63 +266,45 @@ static void print_usage(const char *prog) {
 		"       %s [options] --file <file>   (- for stdin)\n"
 		"       <json> | %s [options]        (reads stdin)\n\n"
 		"Options:\n"
-		"  --raw         Output the raw JSON response\n"
-		"  --file <f>    Read JSON from a file, or - for stdin. With no\n"
-		"                json-string and a piped stdin, stdin is read anyway.\n"
-		"  --debug       Show debug output\n"
-		"  --help        Show this help and exit\n"
-		"  --help <cmd>  Show full parameter list for a command\n"
-		"  -V, --version Show this client's version and exit\n"
-		"  --daemon-version  Ask the running daemon its version and exit\n\n"
+		"  --raw            Output the raw JSON response\n"
+		"  --file <f>       Read JSON from a file, or - for stdin. With no\n"
+		"                   json-string and a piped stdin, stdin is read anyway.\n"
+		"  -D NAME=value    Define a variable; ${NAME} in the JSON is expanded\n"
+		"  --debug          Show debug output\n"
+		"  --help [cmd]     Show this help, or a command's parameter list\n"
+		"  -V, --version    Show this client's version and exit\n"
+		"  --daemon-version Ask the running daemon its version and exit\n\n"
 		"System command shortcuts (instead of the raw JSON):\n"
-		"  --status        Print the daemon status JSON ({\"cmd\":\"status\"})\n"
-		"  --running       Print running / not running and exit 0 / 1 (never\n"
-		"                  a connection error)\n"
-		"  --suspend       Freeze rendering        ({\"cmd\":\"suspend\"})\n"
-		"  --resume        Resume rendering         ({\"cmd\":\"resume\"})\n"
-		"  --exit          Shut the daemon down     ({\"cmd\":\"exit\"})\n"
-		"  --timeout <s>   With --exit: keep rendering for <s> seconds first\n\n"
-		"JSON format (single command):\n"
-		"  {\"cmd\": \"text\", \"id\": 0, \"x\": -1, \"y\": -1, \"text\": \"Hello\"}\n\n"
-		"JSON format (batch):\n"
-		"  [{\"cmd\": \"clear\"}, {\"cmd\": \"image\", \"path\": \"splash.png\"}]\n\n"
-		"Available commands:\n"
-		"  Background:  clear     bg_color         image\n"
-		"  Text:        text      remove_text\n"
-		"  Rectangle:   rect      remove_rect\n"
-		"  Ellipse:     ellipse   circle           remove_ellipse  remove_circle\n"
-		"  Line:        line      remove_line\n"
-		"  Stepper:     stepper   remove_stepper\n"
-		"  Marquee:     marquee   remove_marquee\n"
-		"  Sprite:      sprite    remove_sprite\n"
-		"  Image:       overlay   remove_overlay\n"
-		"  Progress:    progress  update_progress  hide_progress\n"
-		"  Arc:         arc       update_arc       hide_arc\n"
-		"  Spinner:     spinner\n"
-		"  Console:     console   console_write    remove_console\n"
-		"  QR code:     qr        remove_qr\n"
-		"  Animation:   animate\n"
-		"  Query:       query     status           version         running\n"
-		"  Control:     suspend   resume           ready           exit\n\n"
+		"  --status         Print the daemon status JSON ({\"system\":\"status\"})\n"
+		"  --running        Print running / not running and exit 0 / 1 (never\n"
+		"                   a connection error)\n"
+		"  --suspend        Freeze rendering    ({\"system\":\"suspend\"})\n"
+		"  --resume         Resume rendering     ({\"system\":\"resume\"})\n"
+		"  --exit           Shut the daemon down ({\"system\":\"exit\"})\n"
+		"  --timeout <s>    With --exit: keep rendering for <s> seconds first\n\n"
+		"Message format — one single-key object per message:\n"
+		"  {\"text\": {\"id\": 0, \"x\": -1, \"y\": -1, \"text\": \"Hello\"}}\n"
+		"Batch (array of messages):\n"
+		"  [{\"progress\": {\"id\": 0, \"value\": 0.5}}, {\"system\": \"clear\"}]\n\n"
+		"Element types: image text rect ellipse/circle line stepper marquee\n"
+		"  sprite overlay progress arc spinner console qr\n"
+		"  re-send with the id to update; {\"...\":{\"id\":N,\"remove\":true}} deletes;\n"
+		"  {\"...\":{\"id\":N,\"animate\":{...}}} tweens; {\"console\":{\"id\":N,\"write\":\"…\"}}\n"
+		"System ops: exit suspend resume clear status version running ready query\n\n"
 		"Run 'splash-ctl --help <cmd>' for full parameter details.\n\n"
 		"Examples:\n"
-		"  %s '{\"cmd\":\"image\",\"path\":\"boot.png\",\"crossfade\":600}'\n"
-		"  %s '{\"cmd\":\"text\",\"id\":0,\"text\":\"Booting...\",\"size\":32}'\n"
-		"  %s '{\"cmd\":\"progress\",\"id\":0,\"value\":0.5}'\n"
-		"  %s '{\"cmd\":\"arc\",\"id\":1,\"indeterminate\":true}'\n"
-		"  %s '{\"cmd\":\"console\",\"id\":2,\"w\":900,\"h\":200}'\n"
-		"  %s '{\"cmd\":\"console_write\",\"id\":2,\"text\":\"Starting services...\"}'\n"
-		"  %s '{\"cmd\":\"qr\",\"id\":3,\"text\":\"https://example.com\"}'\n"
-		"  %s '{\"cmd\":\"animate\",\"type\":\"text\",\"id\":0,\"to\":0,\"duration\":400}'\n"
-		"  %s --file /etc/splash-commands.json\n"
-		"  %s '{\"cmd\":\"status\"}'\n"
+		"  %s '{\"image\":{\"path\":\"boot.png\",\"crossfade\":600}}'\n"
+		"  %s '{\"progress\":{\"id\":0,\"value\":0.5}}'\n"
+		"  %s '{\"arc\":{\"id\":1,\"indeterminate\":true}}'\n"
+		"  %s '{\"console\":{\"id\":2,\"write\":\"Starting services…\"}}'\n"
+		"  %s '{\"text\":{\"id\":0,\"text\":\"${MSG}\"}}' -D MSG=\"Boot failed\"\n"
+		"  echo '{\"system\":\"status\"}' | %s\n"
+		"  %s --file /etc/splash/scene.json\n"
 		"  %s --suspend\n"
-		"  %s --exit\n"
 		"  %s --exit --timeout 3\n",
 		SPLASH_VERSION,
 		prog, prog, prog,
-		prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
-		prog);
+		prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* ========================================================================
@@ -530,7 +513,7 @@ int main(int argc, char **argv) {
 		needs_free = 1;
 	}
 
-	/* A bare {"cmd":"running"} is answered locally so it always yields a
+	/* A bare {"system":"running"} is answered locally so it always yields a
 	 * boolean, never a connection error, even when the daemon is down. */
 	if (is_running_query(json_str)) {
 		if (needs_free)
