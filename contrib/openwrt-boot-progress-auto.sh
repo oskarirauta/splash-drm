@@ -33,6 +33,18 @@
 # `/etc/init.d/network restart` — this code does nothing. It is likewise a
 # near-no-op when splash-ctl is not installed at all.
 #
+# FINISHING
+# ---------
+# When the bar reaches 100% (the last counted S## script), an optional finish
+# step runs in the background: it prints a "ready" line, fades the bar out and
+# asks the daemon to exit. A one-shot flag (SPLASH_DONE_FLAG) guards against the
+# bar being redrawn by the trailing non-S## init scripts that run *after* the
+# counted ones. The flag and counters are cleared only once the daemon has
+# exited, so a late script that slips past the guard hits a dead daemon and
+# can't redraw — and a fresh splash can be started later to tweak a theme
+# without rebooting. Set SPLASH_FINISH=0 to keep the splash up and manage its
+# lifetime yourself.
+#
 # INTEGRATION (one line)
 # ----------------------
 # Add this to /etc/rc.common, immediately after its `shift 2`:
@@ -55,9 +67,45 @@ SPLASH_LOG_COLOR=${SPLASH_LOG_COLOR:-#9fd2ff}
 SPLASH_BOOT_ACTIONS=${SPLASH_BOOT_ACTIONS:-boot start}
 SPLASH_TOTAL_FILE=${SPLASH_TOTAL_FILE:-/tmp/.splash_boot_total}
 SPLASH_CUR_FILE=${SPLASH_CUR_FILE:-/tmp/.splash_boot_cur}
+SPLASH_DONE_FLAG=${SPLASH_DONE_FLAG:-/tmp/.splash_boot_done}
+# --- finish step (runs once when the bar fills; set SPLASH_FINISH=0 to skip) --
+SPLASH_FINISH=${SPLASH_FINISH:-1}                 # 0/"" leaves the splash up
+SPLASH_READY_TEXT=${SPLASH_READY_TEXT:-System ready!}
+SPLASH_READY_COLOR=${SPLASH_READY_COLOR:-#9fe0a0}
+SPLASH_DONE_DELAY=${SPLASH_DONE_DELAY:-2}          # pause before the ready line, s
+SPLASH_EXIT_DELAY=${SPLASH_EXIT_DELAY:-4}          # splash-ctl --exit timeout, s
 # ---------------------------------------------------------------------------
 
+# Fire exactly once, when the bar first fills. The flag is created
+# synchronously so every boot script that runs afterwards — including the
+# trailing non-S## scripts that aren't part of the denominator — is gated out
+# by _splash_boot_report below.
+#
+# Ordering inside the background subshell matters: we request the daemon's exit
+# and only THEN sleep past its timeout before removing the flag and counters.
+# Because the sleep starts after --exit returns and runs one second longer than
+# the daemon's own timeout, the rm lands after the daemon has gone, so even a
+# trailing script that slips past the gate hits a dead daemon and can't redraw.
+_splash_boot_done() {
+    case "$SPLASH_FINISH" in 0|""|no|NO) return 0 ;; esac
+    [ -f "$SPLASH_DONE_FLAG" ] && return 0       # only once
+    : > "$SPLASH_DONE_FLAG"
+    (   # background, so the delays never block the rest of init
+        sleep "$SPLASH_DONE_DELAY"
+        [ -n "$SPLASH_CONSOLE_ID" ] && \
+            "$SPLASH_CTL" "{\"cmd\":\"console_write\",\"id\":$SPLASH_CONSOLE_ID,\"text\":\"$SPLASH_READY_TEXT\",\"color\":\"$SPLASH_READY_COLOR\"}"
+        "$SPLASH_CTL" "{\"cmd\":\"animate\",\"type\":\"$SPLASH_BAR_CMD\",\"id\":$SPLASH_BAR_ID,\"property\":\"opacity\",\"to\":0,\"duration\":400,\"remove_on_end\":true}"
+        "$SPLASH_CTL" --exit --timeout "$SPLASH_EXIT_DELAY"
+        sleep $((SPLASH_EXIT_DELAY + 1))         # wait until the daemon is surely gone
+        rm -f "$SPLASH_TOTAL_FILE" "$SPLASH_CUR_FILE" "$SPLASH_DONE_FLAG"
+    ) >/dev/null 2>&1 &
+}
+
 _splash_boot_report() {
+    # Once the bar has filled, stay quiet for the rest of the boot so trailing
+    # scripts don't redraw the bar or overwrite the ready line.
+    [ -f "$SPLASH_DONE_FLAG" ] && return 0
+
     # Only act on boot-sequence actions; everything else (status, restart, …)
     # returns immediately. The action is rc.common's own $action variable.
     case " $SPLASH_BOOT_ACTIONS " in
@@ -98,6 +146,10 @@ _splash_boot_report() {
     [ -n "$SPLASH_CONSOLE_ID" ] && \
         "$SPLASH_CTL" "{\"cmd\":\"console_write\",\"id\":$SPLASH_CONSOLE_ID,\"text\":\"starting $name\",\"color\":\"$SPLASH_LOG_COLOR\"}" \
             >/dev/null 2>&1
+
+    # Last counted script → run the one-shot finish step.
+    [ "$cur" -ge "$total" ] && _splash_boot_done
+
     return 0
 }
 
