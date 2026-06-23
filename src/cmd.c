@@ -1286,15 +1286,14 @@ static void resolve_anim_field(splash_state_t *st, const char *type, int id,
 	}
 }
 
-static int cmd_animate(splash_state_t *st, cJSON *args, int client_idx) {
-	const char *type = get_string(args, "type", NULL);
-	int id = get_int(args, "id", -1);
-	if (!type || id < 0) {
-		send_response(st, client_idx,
-		              create_response("error", "missing type or id"));
-		return -1;
-	}
-
+/*
+ * Start an animation on an element. Called from the element dispatch when a
+ * message carries an "animate" object: `type`/`id` identify the element (taken
+ * from the enclosing element op), and the tween parameters (property, from, to,
+ * duration, easing, repeat, remove_on_end) are read from `args`.
+ */
+static int apply_animate(splash_state_t *st, const char *type, int id,
+                         cJSON *args, int client_idx) {
 	const char *prop = get_string(args, "property", "opacity");
 
 	/* Resolve the element's opacity and animation slots. */
@@ -1633,6 +1632,30 @@ typedef struct {
  * Console Commands
  * ======================================================================== */
 
+/* Push text into a console's ring buffer, splitting on '\n'. A line_col of 0
+ * means "use the console's default colour" at render time. */
+static void console_append(console_t *con, const char *text, uint32_t line_col) {
+	const char *p = text;
+	while (*p) {
+		const char *end = p;
+		while (*end && *end != '\n')
+			end++;
+
+		int len = (int)(end - p);
+		if (len >= CONSOLE_LINE_LEN)
+			len = CONSOLE_LINE_LEN - 1;
+		memcpy(con->lines[con->head], p, (size_t)len);
+		con->lines[con->head][len] = '\0';
+		con->line_color[con->head] = line_col;
+
+		con->head = (con->head + 1) % con->max_lines;
+		if (con->line_count < con->max_lines)
+			con->line_count++;
+
+		p = (*end == '\n') ? end + 1 : end;
+	}
+}
+
 static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
 	int id = get_int(args, "id", -1);
 	if (id < 0) {
@@ -1673,7 +1696,13 @@ static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
 	con->h         = get_coord(args, "h", sh(st), fresh ? 200 : con->h);
 	con->font_slot = get_int(args, "font", fresh ? 0 : con->font_slot);
 	con->font_size = get_float(args, "size", fresh ? 0 : con->font_size);
-	con->color     = get_color(args, "color", fresh ? rgb(255, 255, 255) : con->color);
+	/* "color" sets the console's default text colour when configuring; when a
+	 * line is being written (see "write" below) it instead colours that line,
+	 * so leave the default untouched in that case. */
+	int has_color = (cJSON_GetObjectItem(args, "color") != NULL);
+	int writing   = (cJSON_GetObjectItem(args, "write") != NULL);
+	if (!(writing && has_color))
+		con->color = get_color(args, "color", fresh ? rgb(255, 255, 255) : con->color);
 	con->bg_color  = get_color(args, "bg_color", fresh ? 0 : con->bg_color);
 	con->padding   = get_int(args, "padding", fresh ? 4 : con->padding);
 	con->autofit   = get_bool(args, "autofit", fresh ? 0 : con->autofit);
@@ -1693,50 +1722,11 @@ static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
 		memset(con->lines, 0, sizeof(con->lines));
 	}
 
-	st->needs_render = 1;
-	send_response(st, client_idx, create_response("ok", NULL));
-	return 0;
-}
-
-static int cmd_console_write(splash_state_t *st, cJSON *args, int client_idx) {
-	int id = get_int(args, "id", -1);
-	console_t *con = console_find(st, id);
-	if (!con) {
-		send_response(st, client_idx,
-		              create_response("error", "console not found"));
-		return -1;
-	}
-
-	const char *text = get_string(args, "text", NULL);
-	if (!text) {
-		send_response(st, client_idx,
-		              create_response("error", "missing text"));
-		return -1;
-	}
-
-	/* Optional per-line colour (absent = use the console's default colour). */
-	uint32_t line_col = get_color(args, "color", 0);
-
-	/* Split on '\n' and push each segment as a separate line. */
-	const char *p = text;
-	while (*p) {
-		const char *end = p;
-		while (*end && *end != '\n')
-			end++;
-
-		int len = (int)(end - p);
-		if (len >= CONSOLE_LINE_LEN)
-			len = CONSOLE_LINE_LEN - 1;
-		memcpy(con->lines[con->head], p, (size_t)len);
-		con->lines[con->head][len] = '\0';
-		con->line_color[con->head] = line_col;
-
-		con->head = (con->head + 1) % con->max_lines;
-		if (con->line_count < con->max_lines)
-			con->line_count++;
-
-		p = (*end == '\n') ? end + 1 : end;
-	}
+	/* Optional inline write: {"console":{"id":N,"write":"line","color":...}}.
+	 * Appends after any config above, so create-and-write in one message works. */
+	const char *write = get_string(args, "write", NULL);
+	if (write)
+		console_append(con, write, has_color ? get_color(args, "color", 0) : 0);
 
 	st->needs_render = 1;
 	send_response(st, client_idx, create_response("ok", NULL));
@@ -2248,7 +2238,15 @@ static int process_single_cmd(splash_state_t *st, cJSON *msg,
 					LOGW("element '%s' value is not an object", key);
 				return -1;
 			}
-			return elem_table[i].handler(st, val, client_idx);
+			int rc = elem_table[i].handler(st, val, client_idx);
+
+			/* An "animate" object tweens the element after its fields are
+			 * applied. The element handler already replied, so suppress
+			 * this call's response (client_idx -1). */
+			cJSON *an = cJSON_GetObjectItem(val, "animate");
+			if (rc == 0 && cJSON_IsObject(an))
+				apply_animate(st, key, get_int(val, "id", -1), an, -1);
+			return rc;
 		}
 	}
 
