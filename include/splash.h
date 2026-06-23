@@ -453,8 +453,7 @@ typedef struct {
 	int      shadow_blur;
 	uint32_t shadow_color;
 
-	int      borderless;      /* no border */
-	int      border_width;    /* border thickness */
+	int      border_width;    /* border thickness; 0 = no border */
 	int      radius;          /* corner radius */
 
 	int      font_slot;

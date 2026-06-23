@@ -1084,8 +1084,18 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	pb->valign       = get_valign(args, "valign", fresh ? VALIGN_MIDDLE : pb->valign);
 	pb->style        = get_int(args, "style", fresh ? 0 : pb->style);
 	pb->value        = fclamp(get_float(args, "value", fresh ? 0 : pb->value), 0.0f, 1.0f);
-	pb->borderless   = get_bool(args, "borderless", fresh ? 0 : pb->borderless);
-	pb->border_width = get_int(args, "border_width", fresh ? 2 : pb->border_width);
+	/* `border` is an undocumented CSS-like shorthand for border_width: a
+	 * number, or false (0) / true (1px). The explicit border_width wins when
+	 * both are present. */
+	int border_def = fresh ? 2 : pb->border_width;
+	cJSON *border_j = cJSON_GetObjectItem(args, "border");
+	if (border_j) {
+		if (cJSON_IsBool(border_j))
+			border_def = cJSON_IsTrue(border_j) ? 1 : 0;
+		else if (cJSON_IsNumber(border_j))
+			border_def = border_j->valueint;
+	}
+	pb->border_width = get_int(args, "border_width", border_def);
 	pb->radius       = get_int(args, "radius", fresh ? 0 : pb->radius);
 	/* Documented keys are font_slot/font_size; font/size remain legacy aliases. */
 	pb->font_slot    = get_int(args, "font_slot",

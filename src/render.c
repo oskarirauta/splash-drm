@@ -856,8 +856,20 @@ void draw_progress_bar(drm_buffer_t *buf, progress_bar_t *pb) {
 	float fw = (float)pb->w, fh = (float)pb->h;
 	float r  = (float)pb->radius;
 
-	float bw = (pb->borderless || pb->border_width <= 0)
-	           ? 0.0f : (float)pb->border_width;
+	float bw = (pb->border_width <= 0) ? 0.0f : (float)pb->border_width;
+
+	/* The border is inset and the progress fill sits inside it. On a very
+	 * thin bar there is no room for both: a border wider than half the bar
+	 * collapses the fill to nothing, so the bar renders as just its (often
+	 * invisible) track and appears to draw nothing at all. Cap the border so
+	 * the fill always keeps at least 1px on the shorter axis. A 1px-tall bar
+	 * thus drops the border entirely and shows as a clean line. */
+	int shorter = pb->w < pb->h ? pb->w : pb->h;
+	float max_bw = (float)((shorter - 1) / 2);
+	if (max_bw < 0.0f)
+		max_bw = 0.0f;
+	if (bw > max_bw)
+		bw = max_bw;
 
 	/* 0. Soft drop shadow of the whole bar. */
 	if (pb->shadow) {
@@ -1085,6 +1097,12 @@ void draw_line(drm_buffer_t *buf, line_t *l) {
 	float len2 = abx * abx + aby * aby;
 	float len  = sqrtf(len2);
 	int   round = (l->cap == 1);
+
+	/* A zero-length segment has no area with butt caps - the flat ends clip
+	 * it away to nothing, so don't draw the faint stub it would otherwise
+	 * leave. A round cap genuinely degenerates to a dot, so let it through. */
+	if (!round && len2 < 1e-6f)
+		return;
 
 	int x0 = clamp((int)floorf(fminf(ax, bx) - hw) - 1, 0, (int)buf->width);
 	int x1 = clamp((int)ceilf (fmaxf(ax, bx) + hw) + 1, 0, (int)buf->width);

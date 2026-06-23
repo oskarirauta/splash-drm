@@ -434,8 +434,7 @@ resets to defaults first and `"remove": true` deletes the bar (equivalent to
 | `bar_gradient` | int | `0` | Gradient direction along the fill: same values as `grad_dir` on `rect`. `gradient` is accepted as a legacy alias. |
 | `border_color` | color | theme | Border colour. |
 | `text_color` | color | theme | Percentage label colour. |
-| `borderless` | bool | `false` | Suppress the border entirely. |
-| `border_width` | int | `2` | Border thickness in pixels. |
+| `border_width` | int | `2` | Border thickness in pixels. `0` = no border. On a very thin bar the border is capped so the fill always keeps at least 1px. |
 | `radius` | int | `0` | Corner radius in pixels. |
 | `font_slot` | int | `0` | Font slot for the percentage label. `font` is accepted as an alias. |
 | `font_size` | float | `0` | Font size for the percentage label. `0` = auto (roughly half the bar height). `size` is accepted as an alias. |
