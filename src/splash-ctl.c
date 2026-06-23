@@ -303,6 +303,34 @@ int main(int argc, char **argv) {
 	int arg_offset = 1;
 	int use_file   = 0;
 
+	/* Pull -D/--define NAME=value out of argv wherever they appear — they may
+	 * follow the positional JSON or the --file argument (e.g.
+	 * `splash-ctl --file cmds.json -D MSG="hi"`). Register each define and
+	 * compact the rest of argv for the normal flag/positional parse below. */
+	{
+		int w = 1;
+		for (int r = 1; r < argc; r++) {
+			const char *a = argv[r];
+			if ((strcmp(a, "-D") == 0 || strcmp(a, "--define") == 0) &&
+			    r + 1 < argc) {
+				if (subst_define(argv[++r]) != 0) {
+					fprintf(stderr, "Invalid -D '%s' "
+					        "(expected NAME=value)\n", argv[r]);
+					return 1;
+				}
+			} else if (strncmp(a, "-D", 2) == 0 && a[2] != '\0') {
+				if (subst_define(a + 2) != 0) {
+					fprintf(stderr, "Invalid -D '%s' "
+					        "(expected NAME=value)\n", a + 2);
+					return 1;
+				}
+			} else {
+				argv[w++] = argv[r];
+			}
+		}
+		argc = w;
+	}
+
 	/* Convenience flags for the "system" commands, so scripts can write
 	 * `splash-ctl --exit` instead of the raw JSON and have those lines stand
 	 * out from the drawing commands. action holds the cmd name; timeout is the
@@ -420,6 +448,33 @@ int main(int argc, char **argv) {
 			p += strlen(argv[i]);
 		}
 		*p = '\0';
+	}
+
+	/* With -D defines, expand ${NAME} tokens client-side. The template must be
+	 * valid JSON (tree-level substitution); the daemon only ever sees the
+	 * already-expanded result. Without defines, the input is sent verbatim. */
+	if (subst_count() > 0) {
+		cJSON *root = cJSON_Parse(json_str);
+		if (!root) {
+			fprintf(stderr, "Error: input is not valid JSON "
+			        "(required when using -D substitution)\n");
+			if (needs_free)
+				free(json_str);
+			return 1;
+		}
+		json_substitute(root);
+		char *expanded = cJSON_PrintUnformatted(root);
+		cJSON_Delete(root);
+		if (!expanded) {
+			fprintf(stderr, "Out of memory\n");
+			if (needs_free)
+				free(json_str);
+			return 1;
+		}
+		if (needs_free)
+			free(json_str);
+		json_str   = expanded;
+		needs_free = 1;
 	}
 
 	/* A bare {"cmd":"running"} is answered locally so it always yields a

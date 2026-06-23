@@ -737,4 +737,12 @@ int         get_int(cJSON *obj, const char *key, int default_val);
 float       get_float(cJSON *obj, const char *key, float default_val);
 const char *get_string(cJSON *obj, const char *key, const char *default_val);
 
+/* Variable substitution (subst.c). -D NAME=value registers a define; the loader
+ * and the splash-ctl client expand ${NAME} / ${NAME:-default} tokens in every
+ * JSON string value before the document is interpreted. */
+int  subst_define(const char *spec);   /* "NAME=value"; returns 0 or -1 */
+int  subst_count(void);                /* number of defines registered */
+void json_substitute(cJSON *root);     /* in-place over all string values */
+void subst_free(void);
+
 #endif /* SPLASH_H */

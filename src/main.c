@@ -181,6 +181,8 @@ int load_config(const char *config_str) {
 		return -1;
 	}
 
+	json_substitute(root);
+
 	cJSON *fonts = cJSON_GetObjectItem(root, "fonts");
 	if (fonts && cJSON_IsArray(fonts)) {
 		int count = cJSON_GetArraySize(fonts);
@@ -235,6 +237,8 @@ int process_startup_cmds(splash_state_t *st, const char *cmds_str,
 		LOGE("invalid commands JSON");
 		return -1;
 	}
+
+	json_substitute(root);
 
 	int total = 0, errors = 0;
 	process_json_batch(st, root, -1, &total, &errors);
@@ -346,6 +350,17 @@ int main(int argc, char **argv) {
 		}
 		else if (strcmp(argv[i], "--cmds") == 0 && i + 1 < argc) {
 			cmds_arg = argv[++i];
+		}
+		else if ((strcmp(argv[i], "-D") == 0 ||
+		          strcmp(argv[i], "--define") == 0) && i + 1 < argc) {
+			if (subst_define(argv[++i]) != 0)
+				fprintf(stderr, "splash-drm: invalid -D '%s' "
+				        "(expected NAME=value)\n", argv[i]);
+		}
+		else if (strncmp(argv[i], "-D", 2) == 0 && argv[i][2] != '\0') {
+			if (subst_define(argv[i] + 2) != 0)
+				fprintf(stderr, "splash-drm: invalid -D '%s' "
+				        "(expected NAME=value)\n", argv[i] + 2);
 		}
 		else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
 			const char *arg = argv[++i];

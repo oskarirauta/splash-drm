@@ -52,6 +52,7 @@ SOURCES = $(SRCDIR)/main.c \
           $(SRCDIR)/anim.c \
           $(SRCDIR)/socket.c \
           $(SRCDIR)/cmd.c \
+          $(SRCDIR)/subst.c \
           $(SRCDIR)/log.c \
           $(SRCDIR)/utils.c \
           $(SRCDIR)/kbd.c \
@@ -59,7 +60,8 @@ SOURCES = $(SRCDIR)/main.c \
           $(SRCDIR)/usage.c
 
 OBJECTS     = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES)) $(OBJDIR)/cJSON.o $(OBJDIR)/qrcodegen.o
-CTL_OBJECTS = $(OBJDIR)/splash-ctl.o $(OBJDIR)/usage.o
+CTL_OBJECTS = $(OBJDIR)/splash-ctl.o $(OBJDIR)/usage.o \
+              $(OBJDIR)/subst.o $(OBJDIR)/cJSON.o
 
 TARGET     = splash-drm
 CTL_TARGET = splash-ctl
@@ -96,8 +98,8 @@ $(OBJDIR)/qrcodegen.o: $(QRDIR)/qrcodegen.c
 $(TARGET): $(OBJECTS)
 	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
 
-# splash-ctl is a plain socket client: no cJSON, no libm needed, but it must
-# honour LDFLAGS so `make static` links it statically too.
+# splash-ctl links cJSON + subst so it can expand ${NAME} substitutions client
+# side before sending. It must honour LDFLAGS so `make static` links it too.
 $(CTL_TARGET): $(CTL_OBJECTS)
 	$(CC) $(CTL_OBJECTS) -o $@ $(LDFLAGS)
 
