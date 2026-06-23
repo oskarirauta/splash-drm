@@ -1,36 +1,38 @@
-[
-  {"cmd": "bg_color", "color": "#0b0e14"},
+{
+  "version": 1,
+  "fonts": [
+    {"slot": 0, "path": "regular.ttf", "size": 24}
+  ],
+  "background": "#0b0e14",
+  "elements": [
+    {"text": {"id": 99,
+              "x": -1, "y": "20%",
+              "align": "center",
+              "text": "Starting system…",
+              "color": "#e6e9ef",
+              "font": 0,
+              "size": 34}},
 
-  {"cmd": "text",
-   "id": 99,
-   "x": -1, "y": "20%",
-   "align": "center",
-   "text": "Starting system…",
-   "color": "#e6e9ef",
-   "font": 0,
-   "size": 34},
+    {"console": {"id": 0,
+                 "x": "25%", "y": "31%",
+                 "w": "50%", "h": "40%",
+                 "font": 0,
+                 "size": 16,
+                 "color": "#6b7280",
+                 "bg_color": "#ffffff08",
+                 "padding": 14}},
 
-  {"cmd": "console",
-   "id": 0,
-   "x": "25%", "y": "31%",
-   "w": "50%", "h": "40%",
-   "font": 0,
-   "size": 16,
-   "color": "#6b7280",
-   "bg_color": "#ffffff08",
-   "padding": 14},
-
-  {"cmd": "progress",
-   "id": 0,
-   "x": -1, "y": "80%",
-   "w": "50%", "h": 22,
-   "align": "center",
-   "value": 0.0,
-   "radius": 8,
-   "bg_color": "#ffffff14",
-   "bar_color": "#4aa3ff",
-   "show_percent": true,
-   "text_color": "#e6e9ef",
-   "font": 0,
-   "size": 13}
-]
+    {"progress": {"id": 0,
+                  "x": -1, "y": "80%",
+                  "w": "50%", "h": 22,
+                  "align": "center",
+                  "value": 0.0,
+                  "radius": 8,
+                  "bg_color": "#ffffff14",
+                  "bar_color": "#4aa3ff",
+                  "show_percent": true,
+                  "text_color": "#e6e9ef",
+                  "font": 0,
+                  "size": 13}}
+  ]
+}

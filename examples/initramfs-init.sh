@@ -20,7 +20,7 @@
 #
 # Assumes util-linux blkid (the standard on this initramfs); a busybox-only
 # blkid may need `findfs` instead. Copy to your initramfs as /init and adjust
-# the ROOT_WAIT_* values and the splash --config/--cmds to taste.
+# the ROOT_WAIT_* values and the splash --config scene document to taste.
 
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export PATH
@@ -33,14 +33,15 @@ ROOT_WAIT_SECS=1
 # the reason large on the splash first and hold it a few seconds; then release
 # the display (restoring the console) and drop to a rescue shell for whoever can
 # read it. (splash-drm doesn't hide the text cursor the way old framebuffer
-# splashes did, so there is nothing to restore on the way out.) The message must
-# not contain a double quote — it is inlined into JSON — and the ones below don't.
+# splashes did, so there is nothing to restore on the way out.) The dynamic
+# reason is passed with -D, so splash-ctl substitutes ${MSG} and JSON-escapes
+# it safely — the message may contain any characters, quotes included.
 fail() {
-	splash-ctl '{"cmd":"clear","color":"#2a0000"}' 2>/dev/null
-	splash-ctl '{"cmd":"text","id":0,"y":"40%","size":56,"font":1,"color":"#ff6060","text":"Boot failed"}' 2>/dev/null
-	splash-ctl '{"cmd":"text","id":1,"y":"56%","size":28,"color":"#ffd6d6","wrap":true,"wrap_width":700,"text":"'"$1"'"}' 2>/dev/null
+	splash-ctl '{"system":{"action":"clear","color":"#2a0000"}}' 2>/dev/null
+	splash-ctl '{"text":{"id":0,"y":"40%","size":56,"font":1,"color":"#ff6060","text":"Boot failed"}}' 2>/dev/null
+	splash-ctl '{"text":{"id":1,"y":"56%","size":28,"color":"#ffd6d6","wrap":true,"wrap_width":700,"text":"${MSG}"}}' -D MSG="$1" 2>/dev/null
 	sleep 4
-	splash-ctl '{"cmd":"exit"}' 2>/dev/null
+	splash-ctl '{"system":"exit"}' 2>/dev/null
 	printf '\n%s\nDropping to a rescue shell.\n' "$1" > /dev/tty1
 	exec </dev/tty1 >/dev/tty1 2>/dev/tty1
 	exec /bin/busybox sh
@@ -55,8 +56,7 @@ mount -t devtmpfs none /dev
 # stuck boot can never leave the daemon up forever. Fonts/images resolve from
 # the default /usr/share/splash search paths.
 splash-drm /dev/dri/card0 --fork --timeout 900 \
-	--config '{"fonts":[{"slot":0,"path":"regular.ttf","size":24},{"slot":1,"path":"bold.ttf","size":24}]}' \
-	--cmds   '[{"cmd":"bg_color","color":"#000"},{"cmd":"image","path":"splash.png","mode":3},{"cmd":"text","id":0,"font":0,"y":"70%","size":76,"shadow":1,"text":"Booting!"}]'
+	--config '{"version":1,"fonts":[{"slot":0,"path":"regular.ttf","size":24},{"slot":1,"path":"bold.ttf","size":24}],"background":"#000","elements":[{"image":{"path":"splash.png","mode":3}},{"text":{"id":0,"font":0,"y":"70%","size":76,"shadow":1,"text":"Booting!"}}]}'
 
 # The root= identifier from the kernel command line (UUID=, PARTUUID=, LABEL= or
 # a /dev path). Walk the tokens so a stray "root" elsewhere can't confuse it.
@@ -87,7 +87,7 @@ while [ "$n" -lt "$ROOT_WAIT_TRIES" ]; do
 	[ -n "$ROOTDEV" ] && [ -b "$ROOTDEV" ] && break
 	# On the first miss, note the wait on screen (merges into the existing
 	# text element, keeping its position/size); skipped for instant local disks.
-	[ "$n" = 0 ] && splash-ctl '{"cmd":"text","id":0,"text":"Waiting for storage…"}' 2>/dev/null
+	[ "$n" = 0 ] && splash-ctl '{"text":{"id":0,"text":"Waiting for storage…"}}' 2>/dev/null
 	n=$((n + 1))
 	sleep "$ROOT_WAIT_SECS"
 done
@@ -104,6 +104,6 @@ mount --move /dev /mnt/dev
 # control socket, and splash-ctl is synchronous, so once this returns the splash
 # is on screen and frozen — it keeps DRM master across the switch. (If you give
 # the splash a fade-in or animation, add a short sleep here so it settles first.)
-splash-ctl '{"cmd":"suspend"}'
+splash-ctl '{"system":"suspend"}'
 
 exec switch_root /mnt /sbin/init

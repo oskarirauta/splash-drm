@@ -70,7 +70,7 @@ splash_progress_done() {
     # This guards against parallel init paths (procd-launched services)
     # that might race and report an earlier percentage.
     local current_val
-    current_val=$(splash-ctl "{\"cmd\":\"query\",\"type\":\"arc\",\"id\":$SPLASH_PROGRESS_ARC_ID}" \
+    current_val=$(splash-ctl "{\"system\":{\"action\":\"query\",\"type\":\"arc\",\"id\":$SPLASH_PROGRESS_ARC_ID}}" \
                   2>/dev/null | grep -o '"value":[0-9.]*' | cut -d: -f2)
 
     if [ -n "$current_val" ]; then
@@ -79,7 +79,7 @@ splash_progress_done() {
         [ "$should_update" = "1" ] || return 0
     fi
 
-    splash-ctl "{\"cmd\":\"update_arc\",\"id\":$SPLASH_PROGRESS_ARC_ID,\"value\":$new_val}" \
+    splash-ctl "{\"arc\":{\"id\":$SPLASH_PROGRESS_ARC_ID,\"value\":$new_val}}" \
         >/dev/null 2>&1 || true
 }
 
@@ -87,9 +87,9 @@ splash_progress_done() {
 # Call as: splash_status_text "Loading kernel modules"
 splash_status_text() {
     command -v splash-ctl >/dev/null 2>&1 || return 0
-    local msg
-    msg=$(printf '%s' "$1" | sed "s/\"/'/g")   # escape quotes for JSON
-    splash-ctl "{\"cmd\":\"text\",\"id\":1,\"text\":\"$msg\"}" >/dev/null 2>&1 || true
+    # Pass the text via -D so splash-ctl substitutes ${MSG} and JSON-escapes it
+    # safely — no manual quote escaping needed, any character is fine.
+    splash-ctl '{"text":{"id":1,"text":"${MSG}"}}' -D MSG="$1" >/dev/null 2>&1 || true
 }
 
 # Call when boot is complete (from the last init script or a dedicated
@@ -97,11 +97,11 @@ splash_status_text() {
 splash_boot_done() {
     command -v splash-ctl >/dev/null 2>&1 || return 0
     splash-ctl "[
-        {\"cmd\":\"update_arc\",\"id\":$SPLASH_PROGRESS_ARC_ID,\"value\":1.0},
-        {\"cmd\":\"animate\",\"type\":\"arc\",\"id\":$SPLASH_PROGRESS_ARC_ID,
-         \"to\":0,\"duration\":600,\"easing\":\"ease_out\",\"remove_on_end\":true},
-        {\"cmd\":\"animate\",\"type\":\"text\",\"id\":1,
-         \"to\":0,\"duration\":400,\"easing\":\"ease_out\",\"remove_on_end\":true}
+        {\"arc\":{\"id\":$SPLASH_PROGRESS_ARC_ID,\"value\":1.0}},
+        {\"arc\":{\"id\":$SPLASH_PROGRESS_ARC_ID,
+         \"animate\":{\"to\":0,\"duration\":600,\"easing\":\"ease_out\",\"remove_on_end\":true}}},
+        {\"text\":{\"id\":1,
+         \"animate\":{\"to\":0,\"duration\":400,\"easing\":\"ease_out\",\"remove_on_end\":true}}}
     ]" >/dev/null 2>&1 || true
     rm -f "$SPLASH_PROGRESS_COUNT_FILE"
 }

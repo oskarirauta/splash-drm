@@ -221,13 +221,15 @@ int load_config(splash_state_t *st, const char *config_str) {
 		}
 	}
 
-	/* Declarative scene: run the elements array as a startup batch. */
+	/* Declarative scene: run the elements array as a startup batch. The error
+	 * count is returned so --check can validate the document's elements. */
+	int errors = 0;
 	cJSON *elements = cJSON_GetObjectItem(root, "elements");
 	if (elements && cJSON_IsArray(elements))
-		process_json_batch(st, elements, -1, NULL, NULL);
+		process_json_batch(st, elements, -1, NULL, &errors);
 
 	cJSON_Delete(root);
-	return 0;
+	return errors;	/* >=0 element problems; -1 only on a load failure above */
 }
 
 /* Run the optional startup command batch (client_idx -1: no replies).
@@ -463,9 +465,14 @@ int main(int argc, char **argv) {
 		st.drm.mode.vdisplay = 1080;
 
 		int problems = 0, total = 0, errors = 0;
-		if (config_arg && load_config(&st, config_arg) < 0) {
-			LOGE("config: failed to load");
-			problems++;
+		if (config_arg) {
+			int r = load_config(&st, config_arg);
+			if (r < 0) {
+				LOGE("config: failed to load");
+				problems++;
+			} else {
+				problems += r;	/* element problems in the scene document */
+			}
 		}
 		if (cmds_arg) {
 			if (process_startup_cmds(&st, cmds_arg, &total, &errors) < 0 &&

@@ -93,8 +93,8 @@ _splash_boot_done() {
     (   # background, so the delays never block the rest of init
         sleep "$SPLASH_DONE_DELAY"
         [ -n "$SPLASH_CONSOLE_ID" ] && \
-            "$SPLASH_CTL" "{\"cmd\":\"console_write\",\"id\":$SPLASH_CONSOLE_ID,\"text\":\"$SPLASH_READY_TEXT\",\"color\":\"$SPLASH_READY_COLOR\"}"
-        "$SPLASH_CTL" "{\"cmd\":\"animate\",\"type\":\"$SPLASH_BAR_CMD\",\"id\":$SPLASH_BAR_ID,\"property\":\"opacity\",\"to\":0,\"duration\":400,\"remove_on_end\":true}"
+            "$SPLASH_CTL" "{\"console\":{\"id\":$SPLASH_CONSOLE_ID,\"write\":\"$SPLASH_READY_TEXT\",\"color\":\"$SPLASH_READY_COLOR\"}}"
+        "$SPLASH_CTL" "{\"$SPLASH_BAR_CMD\":{\"id\":$SPLASH_BAR_ID,\"animate\":{\"property\":\"opacity\",\"to\":0,\"duration\":400,\"remove_on_end\":true}}}"
         "$SPLASH_CTL" --exit --timeout "$SPLASH_EXIT_DELAY"
         sleep $((SPLASH_EXIT_DELAY + 1))         # wait until the daemon is surely gone
         rm -f "$SPLASH_TOTAL_FILE" "$SPLASH_CUR_FILE" "$SPLASH_DONE_FLAG"
@@ -141,10 +141,10 @@ _splash_boot_report() {
     local frac
     frac=$(awk "BEGIN{v=$cur/$total; if(v>1)v=1; printf \"%.4f\", v}")
 
-    "$SPLASH_CTL" "{\"cmd\":\"$SPLASH_BAR_CMD\",\"id\":$SPLASH_BAR_ID,\"value\":$frac}" \
+    "$SPLASH_CTL" "{\"$SPLASH_BAR_CMD\":{\"id\":$SPLASH_BAR_ID,\"value\":$frac}}" \
         >/dev/null 2>&1
     [ -n "$SPLASH_CONSOLE_ID" ] && \
-        "$SPLASH_CTL" "{\"cmd\":\"console_write\",\"id\":$SPLASH_CONSOLE_ID,\"text\":\"starting $name\",\"color\":\"$SPLASH_LOG_COLOR\"}" \
+        "$SPLASH_CTL" "{\"console\":{\"id\":$SPLASH_CONSOLE_ID,\"write\":\"starting $name\",\"color\":\"$SPLASH_LOG_COLOR\"}}" \
             >/dev/null 2>&1
 
     # Last counted script → run the one-shot finish step.
