@@ -227,6 +227,33 @@ static char *read_file(const char *path) {
 	return buf;
 }
 
+/* Read an entire stream (stdin, a pipe — where fseek/ftell don't work) into a
+ * newly allocated, NUL-terminated buffer that grows as needed. */
+static char *read_stream(FILE *f) {
+	size_t cap = 4096, len = 0;
+	char  *buf = malloc(cap);
+	if (!buf)
+		return NULL;
+
+	for (;;) {
+		if (len + 1 >= cap) {
+			cap *= 2;
+			char *nb = realloc(buf, cap);
+			if (!nb) {
+				free(buf);
+				return NULL;
+			}
+			buf = nb;
+		}
+		size_t n = fread(buf + len, 1, cap - len - 1, f);
+		if (n == 0)
+			break;
+		len += n;
+	}
+	buf[len] = '\0';
+	return buf;
+}
+
 /* ========================================================================
  * Usage
  * ======================================================================== */
@@ -235,10 +262,12 @@ static void print_usage(const char *prog) {
 	fprintf(stderr,
 		"splash-ctl v%s - JSON control client for splash-drm\n\n"
 		"Usage: %s [options] <json-string>\n"
-		"       %s [options] --file <json-file>\n\n"
+		"       %s [options] --file <file>   (- for stdin)\n"
+		"       <json> | %s [options]        (reads stdin)\n\n"
 		"Options:\n"
 		"  --raw         Output the raw JSON response\n"
-		"  --file        Read JSON from a file instead of the argument\n"
+		"  --file <f>    Read JSON from a file, or - for stdin. With no\n"
+		"                json-string and a piped stdin, stdin is read anyway.\n"
 		"  --debug       Show debug output\n"
 		"  --help        Show this help and exit\n"
 		"  --help <cmd>  Show full parameter list for a command\n"
@@ -290,7 +319,7 @@ static void print_usage(const char *prog) {
 		"  %s --exit\n"
 		"  %s --exit --timeout 3\n",
 		SPLASH_VERSION,
-		prog, prog,
+		prog, prog, prog,
 		prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
 		prog);
 }
@@ -339,6 +368,9 @@ int main(int argc, char **argv) {
 	int         timeout = -1;
 
 	while (arg_offset < argc && argv[arg_offset][0] == '-') {
+		/* A lone "-" is the stdin positional (e.g. --file -), not a flag. */
+		if (strcmp(argv[arg_offset], "-") == 0)
+			break;
 		if (strcmp(argv[arg_offset], "--debug") == 0) {
 			debug_mode = 1;
 			arg_offset++;
@@ -415,21 +447,23 @@ int main(int argc, char **argv) {
 		return send_json(buf) < 0 ? 1 : 0;
 	}
 
-	if (arg_offset >= argc) {
-		print_usage(argv[0]);
-		return 1;
-	}
-
 	char *json_str  = NULL;
 	int   needs_free = 0;
 
 	if (use_file) {
-		json_str = read_file(argv[arg_offset]);
+		/* --file <path>, or --file - to read stdin explicitly. */
+		if (arg_offset >= argc) {
+			fprintf(stderr, "--file requires a path (use - for stdin)\n");
+			return 1;
+		}
+		const char *path = argv[arg_offset];
+		json_str = (strcmp(path, "-") == 0) ? read_stream(stdin)
+		                                     : read_file(path);
 		if (!json_str)
 			return 1;
 		needs_free = 1;
-	} else {
-		/* Concatenate all remaining arguments, space-separated. */
+	} else if (arg_offset < argc) {
+		/* Inline argument: concatenate all remaining args, space-separated. */
 		size_t total = 0;
 		for (int i = arg_offset; i < argc; i++)
 			total += strlen(argv[i]) + 1;
@@ -449,6 +483,24 @@ int main(int argc, char **argv) {
 			p += strlen(argv[i]);
 		}
 		*p = '\0';
+	} else if (!isatty(STDIN_FILENO)) {
+		/* No inline argument and stdin is a pipe/redirect: read it, so
+		 * `echo '{...}' | splash-ctl` and `splash-ctl < scene.json` work
+		 * with no flag at all. */
+		json_str = read_stream(stdin);
+		if (!json_str) {
+			fprintf(stderr, "Out of memory\n");
+			return 1;
+		}
+		needs_free = 1;
+		if (json_str[0] == '\0') {
+			fprintf(stderr, "No JSON on stdin\n");
+			free(json_str);
+			return 1;
+		}
+	} else {
+		print_usage(argv[0]);
+		return 1;
 	}
 
 	/* With -D defines, expand ${NAME} tokens client-side. The template must be
