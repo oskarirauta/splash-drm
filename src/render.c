@@ -1529,6 +1529,20 @@ void render_frame(splash_state_t *st) {
 			draw_spinner(buf, &st->spinners[i], now);
 	}
 
+	/* Fade-out overlay on exit: a full-screen colour ramping to opaque between
+	 * fade_start_ms and exit_at_ms, on top of everything. */
+	if (st->fade_active && st->exit_at_ms > st->fade_start_ms) {
+		uint64_t span = st->exit_at_ms - st->fade_start_ms;
+		float p = (float)(now - st->fade_start_ms) / (float)span;
+		if (p < 0.0f) p = 0.0f;
+		if (p > 1.0f) p = 1.0f;
+		uint32_t a = (uint32_t)(p * 255.0f + 0.5f);
+		uint32_t c = (st->fade_color & 0x00FFFFFFu) | (a << 24);
+		paint_t fade = { c, c, GRAD_NONE };
+		draw_round_rect(buf, 0.0f, 0.0f,
+		                (float)buf->width, (float)buf->height, 0.0f, &fade);
+	}
+
 	drm_flip(&st->drm);
 	st->needs_render = 0;
 }

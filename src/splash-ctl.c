@@ -281,7 +281,8 @@ static void print_usage(const char *prog) {
 		"  --suspend        Freeze rendering    ({\"system\":\"suspend\"})\n"
 		"  --resume         Resume rendering     ({\"system\":\"resume\"})\n"
 		"  --exit           Shut the daemon down ({\"system\":\"exit\"})\n"
-		"  --timeout <s>    With --exit: keep rendering for <s> seconds first\n\n"
+		"  --timeout <s>    With --exit: keep rendering for <s> seconds first\n"
+		"  --fade [#color]  With --exit --timeout: fade out first (default black)\n\n"
 		"Message format — one single-key object per message:\n"
 		"  {\"text\": {\"id\": 0, \"x\": -1, \"y\": -1, \"text\": \"Hello\"}}\n"
 		"Batch (array of messages):\n"
@@ -349,6 +350,7 @@ int main(int argc, char **argv) {
 	 * exit delay in seconds (only meaningful with --exit). */
 	const char *action  = NULL;
 	int         timeout = -1;
+	const char *fade    = NULL;	/* "true" or a "#rrggbb" colour */
 
 	while (arg_offset < argc && argv[arg_offset][0] == '-') {
 		/* A lone "-" is the stdin positional (e.g. --file -), not a flag. */
@@ -406,22 +408,48 @@ int main(int argc, char **argv) {
 			}
 			timeout = (int)t;
 			arg_offset += 2;
+		} else if (strcmp(argv[arg_offset], "--fade") == 0) {
+			/* Optional colour argument: --fade [#rrggbb]; default black. */
+			if (arg_offset + 1 < argc && argv[arg_offset + 1][0] == '#') {
+				fade = argv[arg_offset + 1];
+				arg_offset += 2;
+			} else {
+				fade = "true";
+				arg_offset++;
+			}
 		} else {
 			fprintf(stderr, "Unknown option: %s\n", argv[arg_offset]);
 			return 1;
 		}
 	}
 
-	/* --timeout only shapes --exit (a delayed shutdown). */
+	/* --timeout and --fade only shape --exit (a delayed shutdown). */
 	if (timeout >= 0 && (action == NULL || strcmp(action, "exit") != 0)) {
 		fprintf(stderr, "--timeout only applies to --exit\n");
+		return 1;
+	}
+	if (fade && (action == NULL || strcmp(action, "exit") != 0)) {
+		fprintf(stderr, "--fade only applies to --exit\n");
+		return 1;
+	}
+	if (fade && timeout < 0) {
+		fprintf(stderr,
+		        "--fade needs --timeout <seconds> (the fade duration)\n");
 		return 1;
 	}
 
 	/* An action flag is terminal: build its JSON and send it. */
 	if (action) {
-		char buf[80];
-		if (timeout >= 0)
+		char buf[120];
+		if (fade && strcmp(fade, "true") != 0)
+			snprintf(buf, sizeof(buf),
+			         "{\"system\":{\"action\":\"exit\",\"timeout\":%d,"
+			         "\"fade\":\"%s\"}}", timeout, fade);
+		else if (fade)
+			snprintf(buf, sizeof(buf),
+			         "{\"system\":{\"action\":\"exit\",\"timeout\":%d,"
+			         "\"fade\":true}}", timeout);
+		else if (timeout >= 0)
 			snprintf(buf, sizeof(buf),
 			         "{\"system\":{\"action\":\"exit\",\"timeout\":%d}}",
 			         timeout);

@@ -266,7 +266,7 @@ Sent under the `system` key — a string shorthand or `{"action": "…", …}`:
 | `"version"` | Running daemon version. Since 4.0.1; older daemons reply `unknown command`. |
 | `"running"` | Liveness probe; a live daemon returns `{"status":"ok","running":true}`. Backs `splash-ctl --running`, which never fails on a connection error. |
 | `"ready"` | Mark the daemon as ready (for external polling). |
-| `{"action":"exit","timeout":N}` | Shut down cleanly. Optional `timeout` (seconds) keeps rendering first. |
+| `{"action":"exit","timeout":N}` | Shut down cleanly. Optional `timeout` (seconds) keeps rendering first; add `"fade":true` (or `"fade":"#rrggbb"`) to fade the screen out over that window. |
 | `{"action":"query","type":T,"id":N}` | Read back element state — position, `value`/`text`, `opacity`, and type-specific fields. |
 
 ### Backdrop

@@ -618,6 +618,13 @@ typedef struct {
 	uint64_t last_activity_ms;   /* monotonic time of the last command */
 	uint32_t watchdog_ms;        /* idle timeout, 0 = disabled */
 	uint64_t exit_at_ms;         /* scheduled exit time, 0 = no exit pending */
+
+	/* Fade-out on exit: a full-screen overlay ramps from transparent to
+	 * fade_color between fade_start_ms and exit_at_ms, then the daemon exits.
+	 * Renders even while frozen so a suspended splash still fades. */
+	int      fade_active;
+	uint64_t fade_start_ms;
+	uint32_t fade_color;
 } splash_state_t;
 
 /* ========================================================================

@@ -208,8 +208,23 @@ static int cmd_exit(splash_state_t *st, cJSON *args, int client_idx) {
 	int delay_s = get_int(args, "timeout", 0);
 	send_response(st, client_idx, create_response("ok", NULL));
 	if (delay_s > 0) {
-		st->exit_at_ms = now_ms() + (uint64_t)delay_s * 1000u;
-		LOGD("exit scheduled in %d s", delay_s);
+		uint64_t now = now_ms();
+		st->exit_at_ms = now + (uint64_t)delay_s * 1000u;
+
+		/* Optional fade-out over the timeout window: "fade":true fades to
+		 * black, "fade":"#rrggbb" to that colour. The target is forced opaque
+		 * so the overlay fully covers the scene by exit time. */
+		cJSON *fade = cJSON_GetObjectItem(args, "fade");
+		if (fade && (cJSON_IsTrue(fade) || cJSON_IsString(fade))) {
+			st->fade_color    = cJSON_IsString(fade)
+			                    ? (parse_color(fade->valuestring) | 0xFF000000u)
+			                    : 0xFF000000u;
+			st->fade_start_ms = now;
+			st->fade_active   = 1;
+			st->needs_render  = 1;
+		}
+		LOGD("exit scheduled in %d s%s", delay_s,
+		     st->fade_active ? " (fade)" : "");
 	} else {
 		st->running = 0;
 	}

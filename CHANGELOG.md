@@ -51,6 +51,11 @@ in `docs/SCHEMA-v1.md`; the full reference is `REFERENCE.md`.
   `{"text":{"id":0,"animate":{"to":0,"duration":400,"remove_on_end":true}}}`.
 - **`background` operation (cmd.c)** — `{"background":"#rrggbb"}` sets the solid
   backdrop at runtime, mirroring the scene document's `background` field.
+- **Fade-out on exit (cmd.c, render.c, main.c, splash-ctl.c)** —
+  `{"system":{"action":"exit","timeout":N,"fade":true}}` fades the whole screen
+  to black over the `timeout` window before exiting; `"fade":"#rrggbb"` fades to
+  another colour. `splash-ctl --exit --timeout <s> --fade [#color]` builds it.
+  The fade renders even while the daemon is suspended, so it always plays.
 - **CSS-like `border` shorthand on progress (cmd.c)** — `border` accepts a
   number, or `false` (0) / `true` (1), as an alias for `border_width`.
 

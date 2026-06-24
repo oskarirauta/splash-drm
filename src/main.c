@@ -520,8 +520,10 @@ int main(int argc, char **argv) {
 		/* Block indefinitely when idle; tick at RENDER_FPS while an
 		 * animation or spinner is running. The watchdog, when armed,
 		 * caps the wait so the inactivity deadline is always honoured. */
-		int timeout = (st.frozen || !st.anim_running)
-		              ? -1 : (1000 / RENDER_FPS);
+		/* Tick at RENDER_FPS while an animation runs, or while a fade-out is
+		 * in progress (which renders even when frozen); otherwise block. */
+		int fast    = st.fade_active || (!st.frozen && st.anim_running);
+		int timeout = fast ? (1000 / RENDER_FPS) : -1;
 
 		if (st.watchdog_ms > 0 && !st.frozen) {
 			uint64_t since = now_ms() - st.last_activity_ms;
@@ -573,7 +575,12 @@ int main(int argc, char **argv) {
 				st.needs_render = 1;
 		}
 
-		if (!st.frozen && st.needs_render) {
+		/* A fade-out keeps rendering each frame even while frozen, so a
+		 * suspended splash still fades on exit. */
+		if (st.fade_active)
+			st.needs_render = 1;
+
+		if (st.needs_render && (st.fade_active || !st.frozen)) {
 			if (st.hidden) {
 				drm_buffer_t *buf =
 				    &st.drm.buf[st.drm.front_buf ^ 1];

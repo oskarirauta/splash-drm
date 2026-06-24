@@ -689,7 +689,7 @@ shorthand for a parameter-less action or as an object with an `action`:
 
 | Action | Parameters | Description |
 |--------|------------|-------------|
-| `exit` | `timeout` (int, default 0) | Clean shutdown. With `timeout` the daemon keeps rendering for that many seconds first. |
+| `exit` | `timeout` (int, default 0), `fade` (bool / color) | Clean shutdown. With `timeout` the daemon keeps rendering for that many seconds first; `fade` fades the screen out over that window. |
 | `suspend` | — | Freeze rendering; the display keeps whatever was last shown. |
 | `resume` | — | Restart rendering after `suspend`. |
 | `clear` | `color` (color) | Remove every element and set the backdrop to `color` (default black). Loaded fonts are kept. |
@@ -712,6 +712,16 @@ gets an `ok` reply immediately in both cases.
 ```
 
 `splash-ctl --exit` (optionally `--timeout <s>`) builds these for you.
+
+**Fade-out.** Add `"fade": true` to fade the whole screen to black over the
+`timeout` window, or `"fade": "#rrggbb"` to fade to another colour. The fade is
+a full-screen overlay drawn on top of everything; it renders even while the
+daemon is suspended, so it always plays. `fade` needs a non-zero `timeout` (its
+duration); with `timeout` 0 the daemon exits immediately and nothing fades.
+
+```json
+{"system": {"action": "exit", "timeout": 2, "fade": "#000000"}}
+```
 
 ### `status`
 
