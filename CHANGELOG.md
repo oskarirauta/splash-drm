@@ -3,7 +3,7 @@
 All notable changes to splash-drm are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [5.0.0] - 2026-06-24
 
 A breaking redesign of the JSON message and configuration format ("schema v1").
 The program is still in its alpha phase, so this is a hard switch with no
