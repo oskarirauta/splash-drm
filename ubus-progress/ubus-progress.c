@@ -277,6 +277,13 @@ static int notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_parse(svc_policy, __SVC_MAX, tb, blob_data(msg), blob_len(msg));
 	const char *name = tb[SVC_NAME] ? blobmsg_get_string(tb[SVC_NAME]) : "?";
 
+	/* Ignore our own service.start: as a procd service the bridge fires one for
+	 * itself, and it is excluded from the total, so it must not advance either.
+	 * (Normally missed — we subscribe after procd launched us — but be safe.) */
+	if (cfg.self_script && *cfg.self_script &&
+	    strcmp(name, cfg.self_script) == 0)
+		return 0;
+
 	/* Real activity: keep the idle watchdog from firing. */
 	if (cfg.idle_timeout > 0)
 		uloop_timeout_set(&g_idle_timer, cfg.idle_timeout * 1000);

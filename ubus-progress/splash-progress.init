@@ -3,15 +3,30 @@
 # OpenWrt init script for ubus-progress — install as /etc/init.d/splash-progress
 # (chmod +x) and `enable` it.
 #
-# START is very low so the bridge comes up among the first boot scripts, right
-# after ubusd, and catches the service.start events of everything that follows.
-# It runs only at boot (not on a manual `start`), backgrounds itself, and exits
-# on its own once boot completes — so there is nothing to stop.
+# A procd service started very early (START=00) so the bridge comes up among the
+# first boot scripts, right after ubusd, and catches the service.start events of
+# everything that follows. procd runs the listener in the foreground and tracks
+# it; the listener exits on its own once boot completes.
+#
+# respawn is deliberately NOT set: it is opt-in, so without it procd starts the
+# process once and does not restart it after that clean exit — exactly what a
+# run-once boot helper wants. (There is no respawn value that means "run once";
+# its `retries` is a give-up count for crashes, not a run limit.)
+#
+# Being a procd service, the bridge now fires its own service.start{splash-progress}.
+# That is harmless: the bridge subscribes only after procd has launched it, so it
+# misses its own event, and it excludes its own name from the progress total
+# anyway (the `self_script` option, default `splash-progress`).
 
+USE_PROCD=1
 START=00
 
-boot() {
+start_service() {
 	# The splash daemon must already be running (started from the initramfs or
 	# an even earlier hook); the bridge fails silently if it is not reachable.
-	/usr/bin/ubus-progress &
+	procd_open_instance
+	procd_set_param command /usr/bin/ubus-progress
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
 }
