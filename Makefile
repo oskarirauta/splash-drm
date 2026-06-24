@@ -73,7 +73,7 @@ BINDIR   = $(DESTDIR)$(PREFIX)/bin
 SBINDIR  = $(DESTDIR)$(PREFIX)/sbin
 SHAREDIR = $(DESTDIR)$(PREFIX)/share/splash
 
-.PHONY: all clean static strip install uninstall submodules
+.PHONY: all clean static strip install uninstall submodules ubus-progress install-ubus-progress
 
 all: $(TARGET) $(CTL_TARGET)
 
@@ -103,6 +103,21 @@ $(TARGET): $(OBJECTS)
 $(CTL_TARGET): $(CTL_OBJECTS)
 	$(CC) $(CTL_OBJECTS) -o $@ $(LDFLAGS)
 
+# Optional OpenWrt procd boot-progress bridge. NOT part of `all`: it links
+# libubus / libubox / libuci and is only useful on OpenWrt. It reuses the
+# project's cJSON + subst for ${NAME} template expansion. The phony name avoids
+# clashing with the ubus-progress/ source directory; the binary lives inside it.
+UP_OBJECTS = $(OBJDIR)/ubus-progress.o $(OBJDIR)/subst.o $(OBJDIR)/cJSON.o
+
+ubus-progress: ubus-progress/ubus-progress
+
+ubus-progress/ubus-progress: $(UP_OBJECTS)
+	$(CC) $(UP_OBJECTS) -o $@ $(LDFLAGS) -lubus -lubox -luci
+
+$(OBJDIR)/ubus-progress.o: ubus-progress/ubus-progress.c
+	@mkdir -p $(@D)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
 # Statically linked build for initramfs. Re-invokes make with its own object
 # directory so a prior dynamic `make` cannot leave non-static objects behind:
 # previously a bare `make static` after `make` was silently a no-op that
@@ -127,6 +142,15 @@ install: all
 	install -d $(SHAREDIR)/examples
 	install -m 0644 examples/simple-boot.json examples/openwrt-boot.json examples/full-featured.json $(SHAREDIR)/examples/
 
+# Optional: install the OpenWrt ubus-progress bridge, its init script, and a
+# sample UCI config (only when /etc/config/splash does not already exist).
+install-ubus-progress: ubus-progress
+	install -d $(BINDIR) $(DESTDIR)/etc/init.d $(DESTDIR)/etc/config
+	install -m 0755 ubus-progress/ubus-progress $(BINDIR)/ubus-progress
+	install -m 0755 ubus-progress/splash-progress.init $(DESTDIR)/etc/init.d/splash-progress
+	[ -f $(DESTDIR)/etc/config/splash ] || \
+		install -m 0644 ubus-progress/splash.config $(DESTDIR)/etc/config/splash
+
 uninstall:
 	rm -f $(SBINDIR)/$(TARGET) $(BINDIR)/$(CTL_TARGET)
 	rm -f $(SHAREDIR)/openwrt-boot-progress-auto.sh
@@ -136,7 +160,7 @@ uninstall:
 	-rmdir $(SHAREDIR) 2>/dev/null
 
 clean:
-	rm -rf obj obj-static $(TARGET) $(CTL_TARGET)
+	rm -rf obj obj-static $(TARGET) $(CTL_TARGET) ubus-progress/ubus-progress
 
 # Header dependencies (skip while cleaning).
 ifeq (,$(filter clean,$(MAKECMDGOALS)))

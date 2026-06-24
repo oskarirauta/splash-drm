@@ -1,0 +1,17 @@
+#!/bin/sh /etc/rc.common
+#
+# OpenWrt init script for ubus-progress — install as /etc/init.d/splash-progress
+# (chmod +x) and `enable` it.
+#
+# START is very low so the bridge comes up among the first boot scripts, right
+# after ubusd, and catches the service.start events of everything that follows.
+# It runs only at boot (not on a manual `start`), backgrounds itself, and exits
+# on its own once boot completes — so there is nothing to stop.
+
+START=00
+
+boot() {
+	# The splash daemon must already be running (started from the initramfs or
+	# an even earlier hook); the bridge fails silently if it is not reachable.
+	/usr/bin/ubus-progress &
+}

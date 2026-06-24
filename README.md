@@ -437,6 +437,12 @@ present on your system.
 
 The same approach works on Alpine Linux with minor adjustments for OpenRC.
 
+For an event-driven alternative to the `rc.common` shell hook, the optional
+[`ubus-progress/`](ubus-progress/) C bridge subscribes to procd's `service`
+ubus object and drives the splash from real `service.start` events, configured
+through UCI (`/etc/config/splash`). Build it with `make ubus-progress`; see
+[`ubus-progress/README.md`](ubus-progress/README.md).
+
 ## Project structure
 
 ```
@@ -472,6 +478,11 @@ splash-drm/
 ├── contrib/
 │   ├── openwrt-boot-progress-auto.sh    # OpenWrt rc.common hook (automatic)
 │   └── openwrt-boot-progress-simple.sh  # OpenWrt rc.common helpers (manual)
+├── ubus-progress/              # Optional OpenWrt procd → splash ubus bridge (C)
+│   ├── ubus-progress.c         # The bridge (libubus/libubox/libuci + cJSON/subst)
+│   ├── splash.config           # Sample UCI config (/etc/config/splash)
+│   ├── splash-progress.init    # Sample init script (START=00)
+│   └── README.md
 ├── CHANGELOG.md
 ├── Makefile
 └── README.md
