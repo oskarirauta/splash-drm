@@ -155,6 +155,10 @@ void print_cmd_help(const char *cmd) {
 		"  w, h            coord  size\n"
 		"  align/valign    0-2    positioning anchor\n"
 		"  value           float  fill level 0.0-1.0\n"
+		"  smooth          bool/int animate value changes: true = 300ms, or a\n"
+		"                         duration in ms (0/false = instant). Eases from\n"
+		"                         the current fill and retargets a running tween;\n"
+		"                         ignored on the first value and in indeterminate\n"
 		"  style           int    built-in theme: 0=blue 1=green 2=amber\n"
 		"                         3=red 4=purple 5=cyan  (-1=custom)\n"
 		"  bg_color        color  background track\n"
@@ -163,7 +167,9 @@ void print_cmd_help(const char *cmd) {
 		"  bar_gradient    int    gradient direction (GRAD_*)\n"
 		"  border_color    color  border\n"
 		"  text_color      color  percentage text\n"
-		"  border_width    int    border thickness (0 = none)\n"
+		"  border_width    int    border thickness (0 = none); on a thin bar the\n"
+		"                         border is capped so the fill keeps at least 1px\n"
+		"  border          int/bool shorthand for border_width (false=0, true=1)\n"
 		"  radius          int    corner radius\n"
 		"  font_slot       int    font for percentage label\n"
 		"  font_size       float  size of percentage label\n"
@@ -171,6 +177,9 @@ void print_cmd_help(const char *cmd) {
 		"  indeterminate   bool   sweeping highlight mode\n"
 		"  indet_period_ms int    sweep cycle time in ms\n"
 		"  shadow          bool   drop shadow on the whole bar\n"
+		"  shadow_dx/dy    int    shadow offset in pixels (default: 0 / 4)\n"
+		"  shadow_blur     int    shadow blur radius (default: 12)\n"
+		"  shadow_color    color  shadow color (default: #00000078)\n"
 		"  opacity         float  master alpha 0.0-1.0\n\n"
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
@@ -184,6 +193,10 @@ void print_cmd_help(const char *cmd) {
 		"  radius          int    outer radius in pixels\n"
 		"  thickness       int    stroke width (0 = radius/4)\n"
 		"  value           float  fill level 0.0-1.0\n"
+		"  smooth          bool/int animate value changes: true = 300ms, or a\n"
+		"                         duration in ms (0/false = instant). Eases from\n"
+		"                         the current fill and retargets a running tween;\n"
+		"                         ignored on the first value and in indeterminate\n"
 		"  start_angle     float  start angle in degrees; 0=right, CW\n"
 		"                         default: -90 (top of circle)\n"
 		"  sweep           float  total arc in degrees (default: 360)\n"
@@ -336,6 +349,62 @@ void print_cmd_help(const char *cmd) {
 		"Example: show 'System ready' and exit after 3 seconds\n"
 		"  splash-ctl '{\"text\":{\"id\":99,\"text\":\"System ready\"}}'\n"
 		"  splash-ctl '{\"system\":{\"action\":\"exit\",\"timeout\":3}}'\n");
+	} else if (strcmp(cmd, "system") == 0) {
+		fprintf(stderr,
+		"system — daemon control namespace\n\n"
+		"Lifecycle actions and queries are sent under a single \"system\" key,\n"
+		"either as a string shorthand or an action object carrying parameters:\n"
+		"  {\"system\":\"status\"}\n"
+		"  {\"system\":{\"action\":\"exit\",\"timeout\":3,\"fade\":true}}\n"
+		"  {\"system\":{\"action\":\"query\",\"type\":\"arc\",\"id\":0}}\n\n"
+		"Actions:\n"
+		"  exit      shut the daemon down (optional timeout / fade)\n"
+		"  suspend   freeze rendering (keeps the last frame and DRM master)\n"
+		"  resume    resume rendering after a suspend\n"
+		"  clear     remove every element; reset the backdrop\n"
+		"  status    report daemon state (version, size, flags)\n"
+		"  version   report the running daemon's version\n"
+		"  running   liveness probe (never fails on a dead daemon)\n"
+		"  ready     set the 'ready' flag reported by status\n"
+		"  query     read back a single element's current state\n\n"
+		"Run '--help <action>' (e.g. --help exit, --help query) for details.\n");
+	} else if (strcmp(cmd, "suspend") == 0) {
+		fprintf(stderr,
+		"suspend — freeze rendering\n\n"
+		"A system op: {\"system\":\"suspend\"} (splash-ctl --suspend).\n"
+		"Takes no parameters. The daemon stops updating the screen but keeps the\n"
+		"last frame and its DRM master, so the splash persists across the\n"
+		"initramfs -> rootfs switch. A fade-out on exit still renders while\n"
+		"suspended. Undo with 'resume'.\n");
+	} else if (strcmp(cmd, "resume") == 0) {
+		fprintf(stderr,
+		"resume — resume rendering after a suspend\n\n"
+		"A system op: {\"system\":\"resume\"} (splash-ctl --resume).\n"
+		"Takes no parameters. Rendering and animations continue from where they\n"
+		"were frozen by 'suspend'.\n");
+	} else if (strcmp(cmd, "clear") == 0) {
+		fprintf(stderr,
+		"clear — remove every element\n\n"
+		"A system op: {\"system\":\"clear\"} or, to also set the backdrop colour,\n"
+		"{\"system\":{\"action\":\"clear\",\"color\":\"#101418\"}}.\n\n"
+		"  color       color   new background fill (default: black)\n\n"
+		"Deletes all elements of every type and resets the backdrop; loaded fonts\n"
+		"are kept (they cannot be reloaded over the socket). The daemon keeps\n"
+		"running — use it to wipe the scene before drawing a new one, e.g. a fail\n"
+		"screen.\n");
+	} else if (strcmp(cmd, "ready") == 0) {
+		fprintf(stderr,
+		"ready — mark the splash as ready\n\n"
+		"A system op: {\"system\":\"ready\"}.\n"
+		"Takes no parameters. Sets the 'ready' flag reported by 'status', a\n"
+		"handshake for scripts that wait until the splash has been brought up\n"
+		"before proceeding.\n");
+	} else if (strcmp(cmd, "background") == 0) {
+		fprintf(stderr,
+		"background — set the solid backdrop colour\n\n"
+		"Not an element: {\"background\":\"#rrggbb\"} sets the background fill at\n"
+		"runtime, mirroring the scene document's \"background\" field. For a picture\n"
+		"backdrop use the 'image' element instead.\n");
 	} else {
 		fprintf(stderr, "No detailed help available for '%s'.\n"
 		                "Run with -h for the command list.\n", cmd);

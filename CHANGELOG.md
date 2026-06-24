@@ -3,6 +3,19 @@
 All notable changes to splash-drm are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`--help <cmd>` text caught up with schema v1 (usage.c)** — the per-command
+  parameter lists had drifted behind the code. The `progress` and `arc` help now
+  document `smooth` (animated value changes); `progress` also lists the `border`
+  shorthand and the individual `shadow_dx`/`shadow_dy`/`shadow_blur`/
+  `shadow_color` fields. The `system` namespace is no longer undocumented:
+  `--help system` gives an overview, and `suspend`, `resume`, `clear` (with its
+  `color`), `ready`, and `background` gained their own entries instead of falling
+  through to "No detailed help available".
+
 ## [5.0.0] - 2026-06-24
 
 A breaking redesign of the JSON message and configuration format ("schema v1").
