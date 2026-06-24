@@ -17,8 +17,10 @@
  *       option enabled      '1'
  *       option resume       '1'      # resume the initramfs-suspended splash
  *       option total        'auto'   # 'auto' = count /etc/rc.d/S*, or a number
- *       option done_service 'done'   # service whose start means "boot done"
- *       option idle_timeout '60'     # fail if no service.start for Ns (0 = off)
+ *       option done_event   'boot.done'  # ubus "service event" type = boot done
+ *       option done_service 'done'   # service.start name that means "boot done"
+ *       option idle_timeout '60'     # run idle_action if idle for Ns (0 = off)
+ *       option idle_action  'finished'   # finished (settled) | fail (stalled)
  *
  *   config progress 'progress'       # per-tick (${value}=0..1, ${service}=name)
  *       option tick_msg     '{"progress":{"id":0,"value":"${value}"}}'
@@ -71,8 +73,10 @@ static struct {
 	int    enabled;
 	int    resume;         /* resume the (initramfs-suspended) splash on start */
 	int    total;
-	int    idle_timeout;   /* fail if no service.start for this long, 0 = off */
-	char  *done_service;
+	int    idle_timeout;   /* run idle_action if no service.start for this long */
+	char  *idle_action;    /* "finished" (boot settled) | "fail" (stalled) */
+	char  *done_service;   /* service.start name that means "boot done" */
+	char  *done_event;     /* ubus "service event" type that means "boot done" */
 	/* [progress] */
 	char  *tick_msg;
 	char  *status_msg;
@@ -198,7 +202,12 @@ static void run_sequence(char **msgs, int n, int hold,
 
 static void finish(void)
 {
+	if (g_done)
+		return;
+	/* Fill the bar to 100% first, so it always completes even when the count
+	 * never reached the (approximate) total, then run the done sequence. */
 	subst_define("value=1.0");
+	send_template(cfg.tick_msg);
 	run_sequence(cfg.done_msg, cfg.done_msg_n, cfg.hold,
 	             cfg.fin_action, cfg.fin_timeout, cfg.fin_color);
 }
@@ -212,11 +221,16 @@ static void fail(void)
 	             cfg.fail_action, cfg.fail_timeout, cfg.fail_color);
 }
 
-/* Idle watchdog: no service.start within idle_timeout means boot stalled. */
+/* Idle watchdog: no service.start within idle_timeout. With a done event wired
+ * up, this only fires on a genuine stall (idle_action "fail"); without one, the
+ * quiet simply means boot settled (idle_action "finished", the safe default). */
 static void on_idle(struct uloop_timeout *t)
 {
 	(void)t;
-	fail();
+	if (cfg.idle_action && strcmp(cfg.idle_action, "fail") == 0)
+		fail();
+	else
+		finish();
 }
 
 /* ---- procd service notifications ---- */
@@ -224,6 +238,11 @@ static void on_idle(struct uloop_timeout *t)
 enum { SVC_NAME, __SVC_MAX };
 static const struct blobmsg_policy svc_policy[__SVC_MAX] = {
 	[SVC_NAME] = { .name = "service", .type = BLOBMSG_TYPE_STRING },
+};
+
+enum { EV_TYPE, __EV_MAX };
+static const struct blobmsg_policy ev_policy[__EV_MAX] = {
+	[EV_TYPE] = { .name = "type", .type = BLOBMSG_TYPE_STRING },
 };
 
 /* procd notifies subscribers with method "service.start" / "service.stop"
@@ -234,7 +253,23 @@ static int notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 {
 	(void)ctx; (void)obj; (void)req;
 
-	if (g_done || strcmp(method, "service.start") != 0)
+	if (g_done)
+		return 0;
+
+	/* An explicit "boot done" event (e.g. fired from /etc/rc.local with
+	 * `ubus call service event '{"type":"boot.done"}'`) is the reliable
+	 * completion signal, since procd has no boot-complete notification. */
+	if (cfg.done_event && *cfg.done_event &&
+	    strcmp(method, "event.trigger") == 0) {
+		struct blob_attr *et[__EV_MAX];
+		blobmsg_parse(ev_policy, __EV_MAX, et, blob_data(msg), blob_len(msg));
+		const char *type = et[EV_TYPE] ? blobmsg_get_string(et[EV_TYPE]) : "";
+		if (strcmp(type, cfg.done_event) == 0)
+			finish();
+		return 0;
+	}
+
+	if (strcmp(method, "service.start") != 0)
 		return 0;
 
 	struct blob_attr *tb[__SVC_MAX];
@@ -357,7 +392,9 @@ static void load_config(void)
 	cfg.resume       = 1;
 	cfg.total        = 0;
 	cfg.idle_timeout = 60;
+	cfg.idle_action  = strdup("finished");
 	cfg.done_service = strdup("done");
+	cfg.done_event   = strdup("boot.done");
 	cfg.hold         = 2;
 	cfg.fin_action   = strdup("none");
 	cfg.fin_timeout  = 1;
@@ -385,8 +422,14 @@ static void load_config(void)
 		if ((s = uci_str(uci, "splash.global.idle_timeout"))) {
 			cfg.idle_timeout = atoi(s); free(s);
 		}
+		if ((s = uci_str(uci, "splash.global.idle_action"))) {
+			free(cfg.idle_action); cfg.idle_action = s;
+		}
 		if ((s = uci_str(uci, "splash.global.done_service"))) {
 			free(cfg.done_service); cfg.done_service = s;
+		}
+		if ((s = uci_str(uci, "splash.global.done_event"))) {
+			free(cfg.done_event); cfg.done_event = s;
 		}
 
 		/* [progress] */

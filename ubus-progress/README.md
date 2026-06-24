@@ -19,12 +19,14 @@ you want a small always-on daemon driven by real procd service events.
   and `status_msg` (with `${service}`, the service name). The `${...}` tokens are
   expanded with the same tree-level substitution `splash-ctl` uses, so
   `"value":"${value}"` becomes a JSON number.
-- When the `done_service` starts (default `done`, i.e. OpenWrt's `/etc/rc.d/S95done`),
-  or the count reaches `total`, it runs the **finished** sequence: send the
-  `done_msg` list in order, hold for `hold` seconds, then run `exit_action`.
-- If instead no `service.start` arrives for `idle_timeout` seconds, boot is
-  treated as stalled and it runs the **fail** sequence (a distinct screen, since
-  the done point was never reached). Either way the bridge then exits.
+- When boot is done — signalled by the `done_event` (recommended, see install),
+  the `done_service` starting, or the count reaching `total` — it runs the
+  **finished** sequence: fill the bar to 100%, send the `done_msg` list in order,
+  hold for `hold` seconds, then run `exit_action`.
+- If none of those arrive and there is no `service.start` for `idle_timeout`
+  seconds, the idle watchdog runs `idle_action`: a normal **finished** sequence
+  (boot just settled) or, with a done signal wired up, the **fail** sequence on a
+  distinct screen. Either way the bridge then exits.
 - It connects straight to the splash-drm control socket (no `splash-ctl` fork per
   tick) and is silent if the daemon is not reachable.
 
@@ -50,6 +52,24 @@ install -m0755 ubus-progress/splash-progress.init /etc/init.d/splash-progress
 /etc/init.d/splash-progress enable
 ```
 
+### Wire up a "boot done" signal (recommended)
+
+procd has no boot-complete ubus event, so the count never reaches the
+`/etc/rc.d/S*` denominator exactly and there is no clean success signal. Fire
+one yourself at the end of boot — add to `/etc/rc.local`, before its `exit 0`:
+
+```sh
+ubus call service event '{"type":"boot.done","data":{}}'
+```
+
+The bridge watches for that event (`done_event`, default `boot.done`) and
+finishes the instant it arrives — filling the bar to 100% regardless of where
+the count got to. With this in place the idle watchdog only ever fires on a
+genuine stall, so `idle_action 'fail'` shows the fail screen only when boot
+really hangs. Without it, set `idle_action 'finished'` so the quiet after the
+last service is treated as a (slightly delayed) normal completion rather than a
+failure.
+
 ## Where it fits in the boot
 
 - The splash **daemon** (`splash-drm`) should start as early as possible — from
@@ -73,8 +93,10 @@ Four sections; see `splash.config` for a ready-to-edit sample.
 config global 'global'
 	option enabled      '1'
 	option total        'auto'        # 'auto' = count /etc/rc.d/S*, or a number
-	option done_service 'done'        # service whose start means "boot done"
-	option idle_timeout '60'          # show the fail screen if idle for Ns (0 = off)
+	option done_event   'boot.done'   # ubus "service event" type = boot done
+	option done_service 'done'        # OR a service.start name = boot done
+	option idle_timeout '60'          # run idle_action after Ns of no service.start
+	option idle_action  'fail'        # finished (settled) | fail (stalled)
 
 config progress 'progress'
 	option tick_msg     '{"progress":{"id":0,"value":"${value}"}}'
@@ -97,19 +119,26 @@ config fail 'fail'                    # boot stalled — a distinct screen
 	option exit_color   '#2a0000'
 ```
 
-Two outcomes: a normal completion runs the **finished** sequence, while a stall
-(the idle watchdog firing with no `service.start` for `idle_timeout` seconds —
-the done point was never reached) runs the **fail** sequence on a distinct
-screen. Either way the bridge then exits; the splash daemon dies too only if the
-matching `exit_action` is `exit`/`fade`.
+Completion is detected, in order of preference, by the `done_event` (a ubus
+service event — see above), the `done_service` (a `service.start` name), or the
+count reaching `total`; any of these runs the **finished** sequence. The idle
+watchdog (no `service.start` for `idle_timeout` seconds) is the fallback: with
+`idle_action 'finished'` it treats the quiet as a settled boot, with
+`idle_action 'fail'` as a stall that runs the **fail** sequence on a distinct
+screen. The finished sequence always fills the bar to 100% first, so it
+completes even if the count never reached the approximate `total`. Either way
+the bridge then exits; the splash daemon dies too only if that section's
+`exit_action` is `exit`/`fade`.
 
 | Option | Section | Meaning |
 |--------|---------|---------|
 | `enabled` | global | `0` exits immediately, drawing nothing. |
 | `resume` | global | `1` (default) resumes the splash on start (it is usually started suspended from the initramfs), so no separate preinit resume hook is needed. `0` to leave that to something else. |
-| `total` | global | `auto` counts `/etc/rc.d/S*`; a number overrides it. |
-| `done_service` | global | Service whose start triggers the finish (empty = only the `total` fallback). |
-| `idle_timeout` | global | Seconds of no `service.start` after which boot is treated as stalled and the fail sequence runs. `0` disables the watchdog. Reset on every tick. |
+| `total` | global | `auto` counts `/etc/rc.d/S*`; a number overrides it. Approximate — not every S## script starts a service, so tune it or rely on a done signal. |
+| `done_event` | global | ubus `service event` type that means boot is done (fire it from `/etc/rc.local`; see above). The most reliable signal. Empty disables. |
+| `done_service` | global | A `service.start` name that means boot is done (empty = none). |
+| `idle_timeout` | global | Seconds of no `service.start` after which `idle_action` runs. `0` disables the watchdog. Reset on every tick. |
+| `idle_action` | global | What the idle watchdog does: `finished` (boot settled — the safe default) or `fail` (treat as a stall; only meaningful with a `done_event`/`done_service` so normal boots finish first). |
 | `tick_msg` | progress | Message sent each tick; `${value}` is the 0..1 fraction. Empty = skip. |
 | `status_msg` | progress | Message sent each tick; `${service}` is the service name. Empty = skip. |
 | `done_msg` | finished | A `list` of messages sent in order on success (remove the bar/console, show a ready message, …). |
