@@ -3,6 +3,79 @@
 All notable changes to splash-drm are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+A breaking redesign of the JSON message and configuration format ("schema v1").
+The program is still in its alpha phase, so this is a hard switch with no
+compatibility layer for the old `{"cmd":...}` grammar. The design rationale is
+in `docs/SCHEMA-v1.md`; the full reference is `REFERENCE.md`.
+
+### Changed
+
+- **Single-key message format (cmd.c)** — A message is now a single-key JSON
+  object whose key is the discriminator: `{"<type>": {...}}` for an element,
+  `{"system": ...}` for daemon control, `{"background": ...}` for the backdrop.
+  The `{"cmd": "<verb>"}` form is gone — e.g. `{"text":{"id":0,"text":"hi"}}`
+  replaces `{"cmd":"text","id":0,"text":"hi"}`. Element handlers are reused
+  unchanged; only the dispatch and the wire shape changed.
+- **`--config` is a scene document (main.c)** — `--config` now loads one object
+  holding `version`, `fonts`, `background`, and an `elements` array, so a single
+  file describes the whole splash. This unifies the former fonts-only `--config`
+  and the `--cmds` command array. `--check` validates the document's elements,
+  not just its JSON syntax.
+- **`exit` parameter renamed `delay` → `timeout` (cmd.c)** — sent as
+  `{"system":{"action":"exit","timeout":N}}`, or the shorthand `{"system":"exit"}`.
+
+### Added
+
+- **`system` namespace (cmd.c)** — daemon lifecycle and queries are sent under
+  `system`, as a string shorthand (`{"system":"status"}`) or an action object
+  (`{"system":{"action":"query","type":"arc","id":0}}`): exit, suspend, resume,
+  clear, status, version, running, ready, query.
+- **`${NAME}` variable substitution (subst.c)** — both the daemon (`--config`)
+  and `splash-ctl` expand `${NAME}` / `${NAME:-default}` tokens in JSON string
+  values, supplied with `-D NAME=value`. A whole-value token takes its native
+  JSON type; an undefined variable resolves to empty (never `0`). Lets a themed
+  layout carry a dynamic value (e.g. a failure message) safely — the substituted
+  value is JSON-escaped automatically.
+- **stdin input for splash-ctl (splash-ctl.c)** — with no inline argument and a
+  piped stdin, `splash-ctl` reads the message from stdin; `--file -` reads stdin
+  explicitly. The inline argument and `--file <path>` forms still work.
+- **Uniform `"hidden"` field (render.c, cmd.c, splash.h)** — every drawable
+  element accepts `"hidden":true` to stop drawing it while keeping its slot and
+  state; reveal it again with `"hidden":false`. Replaces the per-type
+  `hide_progress` / `hide_arc` commands. (The spinner keeps its richer
+  `action:"hide"/"show_animated"` mechanism.)
+- **`animate` as an element field (cmd.c)** — an `"animate"` object on an
+  element op tweens a property after the element's fields are applied, e.g.
+  `{"text":{"id":0,"animate":{"to":0,"duration":400,"remove_on_end":true}}}`.
+- **`background` operation (cmd.c)** — `{"background":"#rrggbb"}` sets the solid
+  backdrop at runtime, mirroring the scene document's `background` field.
+- **CSS-like `border` shorthand on progress (cmd.c)** — `border` accepts a
+  number, or `false` (0) / `true` (1), as an alias for `border_width`.
+
+### Removed
+
+- **`--cmds` flag (main.c)** — superseded by the scene document's `elements`.
+- **Standalone verb commands (cmd.c)** — `update_progress`, `update_arc`,
+  `hide_progress`, `hide_arc`, every `remove_*`, `console_write`, `bg_color`,
+  and the standalone `animate` command. Their behaviour is now expressed through
+  the merge model: re-send to update, `"remove":true` deletes, `"hidden":true`
+  hides, the `"animate"` field tweens, the console `"write"` field appends, and
+  `{"background":...}` sets the backdrop.
+- **`borderless` progress field (cmd.c)** — redundant with `border_width:0` (and
+  the new `border` shorthand).
+
+### Fixed
+
+- **Thin progress bars drew nothing (render.c)** — a very thin bar (e.g. a 1px
+  line) rendered as just its track because the inset border consumed the whole
+  height, collapsing the fill. The border is now capped so the fill always keeps
+  at least 1px; a 1px bar shows as a clean line.
+- **Zero-length lines left a faint stub (render.c)** — a zero-length butt-cap
+  line has no area but still painted a faint blob; it now draws nothing (a round
+  cap still degenerates to a dot).
+
 ## [4.0.2] - 2026-06-21
 
 ### Added
