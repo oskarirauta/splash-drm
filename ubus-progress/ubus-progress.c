@@ -5,30 +5,40 @@
  * "service" ubus object and, for every service that starts during boot, drives
  * the splash: it advances an N-of-total progress value and shows the service
  * name by filling UCI-configured JSON templates and sending them straight to
- * the splash-drm control socket. When the boot-complete service starts (or the
- * count reaches the total) it runs the configured finish sequence.
+ * the splash-drm control socket. When boot completes it runs the finished
+ * sequence; if boot instead stalls (no service activity for idle_timeout
+ * seconds) it runs the fail sequence. Either way the bridge then exits.
  *
- * It is configured entirely through UCI (/etc/config/splash) in three sections,
- * so nothing about the splash layout is hard-coded — the templates name the
- * element ids, types and colours. An empty template means "skip that update".
+ * It is configured entirely through UCI (/etc/config/splash), so nothing about
+ * the splash layout is hard-coded — the templates name the element ids, types
+ * and colours. An empty template/list means "skip".
  *
  *   config global 'global'
  *       option enabled      '1'
  *       option resume       '1'      # resume the initramfs-suspended splash
  *       option total        'auto'   # 'auto' = count /etc/rc.d/S*, or a number
  *       option done_service 'done'   # service whose start means "boot done"
+ *       option idle_timeout '60'     # fail if no service.start for Ns (0 = off)
  *
  *   config progress 'progress'       # per-tick (${value}=0..1, ${service}=name)
  *       option tick_msg     '{"progress":{"id":0,"value":"${value}"}}'
  *       option status_msg   '{"console":{"id":0,"write":"starting ${service}"}}'
  *
- *   config finished 'finished'       # finish sequence, in order
+ *   config finished 'finished'       # boot completed normally
  *       list   done_msg     '{"progress":{"id":0,"remove":true}}'
- *       list   done_msg     '{"text":{"id":99,"y":"50%","text":"System ready!"}}'
+ *       list   done_msg     '{"text":{"id":99,"text":"System ready!"}}'
  *       option hold         '2'      # pause (s) after done_msg, before exit
  *       option exit_action  'fade'   # none | exit | fade
- *       option exit_timeout '1'      # fade/exit duration, seconds
+ *       option exit_timeout '1'
  *       option exit_color   '#000000'
+ *
+ *   config fail 'fail'               # boot stalled (idle_timeout). ${idle}=Ns
+ *       list   fail_msg     '{"system":{"action":"clear","color":"#2a0000"}}'
+ *       list   fail_msg     '{"text":{"id":0,"text":"Boot stalled"}}'
+ *       option hold         '15'     # show the fail screen at least this long
+ *       option exit_action  'none'   # none keeps the screen up; exit/fade quits
+ *       option exit_timeout '0'
+ *       option exit_color   '#2a0000'
  *
  * Build: `make ubus-progress` (links libubus, libubox, libuci, and reuses the
  * project's cJSON + subst for ${NAME} expansion). Run it early in boot.
@@ -61,23 +71,33 @@ static struct {
 	int    enabled;
 	int    resume;         /* resume the (initramfs-suspended) splash on start */
 	int    total;
+	int    idle_timeout;   /* fail if no service.start for this long, 0 = off */
 	char  *done_service;
 	/* [progress] */
 	char  *tick_msg;
 	char  *status_msg;
-	/* [finished] */
-	char **done_msg;       /* list of messages sent in order at finish */
+	/* [finished] — boot completed normally */
+	char **done_msg;
 	int    done_msg_n;
-	int    hold;           /* seconds to hold after done_msg, before exit */
-	char  *exit_action;    /* none | exit | fade */
-	int    exit_timeout;
-	char  *exit_color;
+	int    hold;           /* seconds to hold the finished frame before exit */
+	char  *fin_action;     /* none | exit | fade */
+	int    fin_timeout;
+	char  *fin_color;
+	/* [fail] — boot stalled */
+	char **fail_msg;
+	int    fail_msg_n;
+	int    fail_hold;      /* seconds to show the fail screen before exit */
+	char  *fail_action;
+	int    fail_timeout;
+	char  *fail_color;
 } cfg;
 
-static int                  g_count = 0;
-static int                  g_done  = 0;
+static int                    g_count = 0;
+static int                    g_done  = 0;
+static char                  *g_exit_json = NULL;   /* sent after the hold */
 static struct ubus_subscriber g_sub;
 static struct uloop_timeout   g_hold_timer;
+static struct uloop_timeout   g_idle_timer;
 
 /* ---- splash-drm control socket ---- */
 
@@ -109,8 +129,8 @@ static void splash_send(const char *json)
 	close(fd);
 }
 
-/* Fill a UCI template with the current ${value}/${service} and send it. An
- * empty/NULL template is skipped; invalid JSON is skipped with a warning. */
+/* Fill a UCI template with the current ${...} defines and send it. An empty/NULL
+ * template is skipped; invalid JSON is skipped with a warning. */
 static void send_template(const char *tmpl)
 {
 	if (!tmpl || !*tmpl)
@@ -131,43 +151,72 @@ static void send_template(const char *tmpl)
 	}
 }
 
-/* ---- finish sequence ---- */
+/* ---- finish / fail (shared sequence) ---- */
 
-/* Second phase: after the hold, run the exit action and quit. */
+/* Build the exit message for an action, or NULL for "none". */
+static char *build_exit(const char *action, int timeout, const char *color)
+{
+	static char buf[160];
+	if (!action || strcmp(action, "none") == 0)
+		return NULL;
+	if (strcmp(action, "fade") == 0)
+		snprintf(buf, sizeof(buf),
+		         "{\"system\":{\"action\":\"exit\",\"timeout\":%d,\"fade\":\"%s\"}}",
+		         timeout, color ? color : "#000000");
+	else	/* "exit" */
+		snprintf(buf, sizeof(buf),
+		         "{\"system\":{\"action\":\"exit\",\"timeout\":%d}}", timeout);
+	return buf;
+}
+
+/* Second phase: after the hold, run the exit action and quit the bridge. */
 static void do_exit(struct uloop_timeout *t)
 {
 	(void)t;
-	if (cfg.exit_action && strcmp(cfg.exit_action, "none") != 0) {
-		char buf[160];
-		if (strcmp(cfg.exit_action, "fade") == 0)
-			snprintf(buf, sizeof(buf),
-			         "{\"system\":{\"action\":\"exit\",\"timeout\":%d,"
-			         "\"fade\":\"%s\"}}",
-			         cfg.exit_timeout,
-			         cfg.exit_color ? cfg.exit_color : "#000000");
-		else	/* "exit" */
-			snprintf(buf, sizeof(buf),
-			         "{\"system\":{\"action\":\"exit\",\"timeout\":%d}}",
-			         cfg.exit_timeout);
-		splash_send(buf);
-	}
+	if (g_exit_json)
+		splash_send(g_exit_json);
 	uloop_end();
 }
 
-/* First phase: send the finished-state messages, then schedule the exit after
- * the hold so the user can see the final frame before it fades. */
-static void finish(void)
+/* Send a message list in order, then schedule the exit after `hold` seconds.
+ * Shared by the finished (success) and fail (stall) outcomes. Fires once. */
+static void run_sequence(char **msgs, int n, int hold,
+                         const char *action, int timeout, const char *color)
 {
 	if (g_done)
 		return;
 	g_done = 1;
+	uloop_timeout_cancel(&g_idle_timer);
 
-	subst_define("value=1.0");
-	for (int i = 0; i < cfg.done_msg_n; i++)
-		send_template(cfg.done_msg[i]);
+	for (int i = 0; i < n; i++)
+		send_template(msgs[i]);
 
+	g_exit_json = build_exit(action, timeout, color);
 	g_hold_timer.cb = do_exit;
-	uloop_timeout_set(&g_hold_timer, cfg.hold > 0 ? cfg.hold * 1000 : 0);
+	uloop_timeout_set(&g_hold_timer, hold > 0 ? hold * 1000 : 0);
+}
+
+static void finish(void)
+{
+	subst_define("value=1.0");
+	run_sequence(cfg.done_msg, cfg.done_msg_n, cfg.hold,
+	             cfg.fin_action, cfg.fin_timeout, cfg.fin_color);
+}
+
+static void fail(void)
+{
+	char b[48];
+	snprintf(b, sizeof(b), "idle=%d", cfg.idle_timeout);
+	subst_define(b);
+	run_sequence(cfg.fail_msg, cfg.fail_msg_n, cfg.fail_hold,
+	             cfg.fail_action, cfg.fail_timeout, cfg.fail_color);
+}
+
+/* Idle watchdog: no service.start within idle_timeout means boot stalled. */
+static void on_idle(struct uloop_timeout *t)
+{
+	(void)t;
+	fail();
 }
 
 /* ---- procd service notifications ---- */
@@ -191,6 +240,10 @@ static int notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	struct blob_attr *tb[__SVC_MAX];
 	blobmsg_parse(svc_policy, __SVC_MAX, tb, blob_data(msg), blob_len(msg));
 	const char *name = tb[SVC_NAME] ? blobmsg_get_string(tb[SVC_NAME]) : "?";
+
+	/* Real activity: keep the idle watchdog from firing. */
+	if (cfg.idle_timeout > 0)
+		uloop_timeout_set(&g_idle_timer, cfg.idle_timeout * 1000);
 
 	/* The boot-complete service is the explicit "done" signal. */
 	if (cfg.done_service && *cfg.done_service &&
@@ -226,8 +279,6 @@ static int notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 
 /* ---- UCI configuration ---- */
 
-/* Read a single string option ("splash.section.option"). Returns a strdup'd
- * value or NULL. */
 static char *uci_str(struct uci_context *uci, const char *path)
 {
 	char buf[256];
@@ -243,8 +294,8 @@ static char *uci_str(struct uci_context *uci, const char *path)
 	return strdup(ptr.o->v.string);
 }
 
-/* Read a list option into a malloc'd array of strings. Accepts either a
- * `list X 'v'` (multiple) or a single `option X 'v'`. Returns the count. */
+/* Read a list option into a malloc'd array of strings. Accepts a `list X 'v'`
+ * (multiple) or a single `option X 'v'`. Returns the count. */
 static int uci_list(struct uci_context *uci, const char *path, char ***out)
 {
 	*out = NULL;
@@ -305,11 +356,16 @@ static void load_config(void)
 	cfg.enabled      = 1;
 	cfg.resume       = 1;
 	cfg.total        = 0;
+	cfg.idle_timeout = 60;
 	cfg.done_service = strdup("done");
 	cfg.hold         = 2;
-	cfg.exit_action  = strdup("none");
-	cfg.exit_timeout = 1;
-	cfg.exit_color   = strdup("#000000");
+	cfg.fin_action   = strdup("none");
+	cfg.fin_timeout  = 1;
+	cfg.fin_color    = strdup("#000000");
+	cfg.fail_hold    = 15;
+	cfg.fail_action  = strdup("none");
+	cfg.fail_timeout = 1;
+	cfg.fail_color   = strdup("#000000");
 
 	struct uci_context *uci = uci_alloc_context();
 	if (uci) {
@@ -326,6 +382,9 @@ static void load_config(void)
 		if (total && strcmp(total, "auto") != 0 && atoi(total) > 0)
 			cfg.total = atoi(total);
 		free(total);
+		if ((s = uci_str(uci, "splash.global.idle_timeout"))) {
+			cfg.idle_timeout = atoi(s); free(s);
+		}
 		if ((s = uci_str(uci, "splash.global.done_service"))) {
 			free(cfg.done_service); cfg.done_service = s;
 		}
@@ -341,13 +400,29 @@ static void load_config(void)
 			cfg.hold = atoi(s); free(s);
 		}
 		if ((s = uci_str(uci, "splash.finished.exit_action"))) {
-			free(cfg.exit_action); cfg.exit_action = s;
+			free(cfg.fin_action); cfg.fin_action = s;
 		}
 		if ((s = uci_str(uci, "splash.finished.exit_timeout"))) {
-			cfg.exit_timeout = atoi(s); free(s);
+			cfg.fin_timeout = atoi(s); free(s);
 		}
 		if ((s = uci_str(uci, "splash.finished.exit_color"))) {
-			free(cfg.exit_color); cfg.exit_color = s;
+			free(cfg.fin_color); cfg.fin_color = s;
+		}
+
+		/* [fail] */
+		cfg.fail_msg_n = uci_list(uci, "splash.fail.fail_msg",
+		                          &cfg.fail_msg);
+		if ((s = uci_str(uci, "splash.fail.hold"))) {
+			cfg.fail_hold = atoi(s); free(s);
+		}
+		if ((s = uci_str(uci, "splash.fail.exit_action"))) {
+			free(cfg.fail_action); cfg.fail_action = s;
+		}
+		if ((s = uci_str(uci, "splash.fail.exit_timeout"))) {
+			cfg.fail_timeout = atoi(s); free(s);
+		}
+		if ((s = uci_str(uci, "splash.fail.exit_color"))) {
+			free(cfg.fail_color); cfg.fail_color = s;
 		}
 
 		uci_free_context(uci);
@@ -393,6 +468,11 @@ int main(void)
 	 * harmless if the daemon is already running or not reachable. */
 	if (cfg.resume)
 		splash_send("{\"system\":\"resume\"}");
+
+	/* Arm the idle watchdog: if no service.start ever arrives, boot stalled. */
+	g_idle_timer.cb = on_idle;
+	if (cfg.idle_timeout > 0)
+		uloop_timeout_set(&g_idle_timer, cfg.idle_timeout * 1000);
 
 	uloop_run();
 

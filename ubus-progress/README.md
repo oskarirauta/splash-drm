@@ -20,8 +20,11 @@ you want a small always-on daemon driven by real procd service events.
   expanded with the same tree-level substitution `splash-ctl` uses, so
   `"value":"${value}"` becomes a JSON number.
 - When the `done_service` starts (default `done`, i.e. OpenWrt's `/etc/rc.d/S95done`),
-  or the count reaches `total`, it runs the finish: send the `done_msg` list in
-  order, hold for `hold` seconds, then run `exit_action`.
+  or the count reaches `total`, it runs the **finished** sequence: send the
+  `done_msg` list in order, hold for `hold` seconds, then run `exit_action`.
+- If instead no `service.start` arrives for `idle_timeout` seconds, boot is
+  treated as stalled and it runs the **fail** sequence (a distinct screen, since
+  the done point was never reached). Either way the bridge then exits.
 - It connects straight to the splash-drm control socket (no `splash-ctl` fork per
   tick) and is silent if the daemon is not reachable.
 
@@ -64,26 +67,41 @@ install -m0755 ubus-progress/splash-progress.init /etc/init.d/splash-progress
 
 ## Configuration (`/etc/config/splash`)
 
-Three sections; see `splash.config` for a ready-to-edit sample.
+Four sections; see `splash.config` for a ready-to-edit sample.
 
 ```
 config global 'global'
 	option enabled      '1'
 	option total        'auto'        # 'auto' = count /etc/rc.d/S*, or a number
 	option done_service 'done'        # service whose start means "boot done"
+	option idle_timeout '60'          # show the fail screen if idle for Ns (0 = off)
 
 config progress 'progress'
 	option tick_msg     '{"progress":{"id":0,"value":"${value}"}}'
 	option status_msg   '{"console":{"id":0,"write":"starting ${service}"}}'
 
-config finished 'finished'
+config finished 'finished'            # boot completed normally
 	list   done_msg     '{"progress":{"id":0,"remove":true}}'
 	list   done_msg     '{"text":{"id":99,"text":"System ready!"}}'
 	option hold         '2'           # seconds to show the ready frame
 	option exit_action  'fade'        # none | exit | fade
 	option exit_timeout '1'           # fade/exit duration in seconds
 	option exit_color   '#000000'
+
+config fail 'fail'                    # boot stalled — a distinct screen
+	list   fail_msg     '{"system":{"action":"clear","color":"#2a0000"}}'
+	list   fail_msg     '{"text":{"id":0,"text":"Boot stalled"}}'
+	option hold         '15'          # show the fail screen at least this long
+	option exit_action  'none'        # none keeps it up; exit/fade quits
+	option exit_timeout '0'
+	option exit_color   '#2a0000'
 ```
+
+Two outcomes: a normal completion runs the **finished** sequence, while a stall
+(the idle watchdog firing with no `service.start` for `idle_timeout` seconds —
+the done point was never reached) runs the **fail** sequence on a distinct
+screen. Either way the bridge then exits; the splash daemon dies too only if the
+matching `exit_action` is `exit`/`fade`.
 
 | Option | Section | Meaning |
 |--------|---------|---------|
@@ -91,13 +109,15 @@ config finished 'finished'
 | `resume` | global | `1` (default) resumes the splash on start (it is usually started suspended from the initramfs), so no separate preinit resume hook is needed. `0` to leave that to something else. |
 | `total` | global | `auto` counts `/etc/rc.d/S*`; a number overrides it. |
 | `done_service` | global | Service whose start triggers the finish (empty = only the `total` fallback). |
+| `idle_timeout` | global | Seconds of no `service.start` after which boot is treated as stalled and the fail sequence runs. `0` disables the watchdog. Reset on every tick. |
 | `tick_msg` | progress | Message sent each tick; `${value}` is the 0..1 fraction. Empty = skip. |
 | `status_msg` | progress | Message sent each tick; `${service}` is the service name. Empty = skip. |
-| `done_msg` | finished | A `list` of messages sent in order at finish (the bar/console can be removed, a ready message shown, …). |
-| `hold` | finished | Seconds to hold the finished frame before the exit action. |
-| `exit_action` | finished | `none` (leave the splash up), `exit` (quit), or `fade` (fade out then quit). |
-| `exit_timeout` | finished | Duration in seconds of the `exit`/`fade`. |
-| `exit_color` | finished | Fade target colour. |
+| `done_msg` | finished | A `list` of messages sent in order on success (remove the bar/console, show a ready message, …). |
+| `fail_msg` | fail | A `list` of messages sent in order on a stall; `${idle}` is the stall time in seconds. |
+| `hold` | finished / fail | Seconds to hold that frame before the exit action (fail defaults to 15 so it can be read). |
+| `exit_action` | finished / fail | `none` (leave the splash up), `exit` (quit), or `fade` (fade out then quit). Per section. |
+| `exit_timeout` | finished / fail | Duration in seconds of the `exit`/`fade`. |
+| `exit_color` | finished / fail | Fade target colour. |
 
 The templates control every element id, type and colour, so the same bridge
 drives any scene. For anything the templates cannot express, fall back to the

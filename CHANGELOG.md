@@ -63,9 +63,12 @@ in `docs/SCHEMA-v1.md`; the full reference is `REFERENCE.md`.
 - **ubus-progress: OpenWrt procd boot-progress bridge (ubus-progress/)** — an
   optional C companion that subscribes to procd's `service` ubus object and
   drives the splash from real service.start events: it advances an N-of-total
-  bar, shows the current service name, and runs a finish sequence (configurable
-  done messages, a hold, then exit/fade). Configured entirely through UCI
-  (`/etc/config/splash`, three sections) with JSON templates expanded via the
+  bar, shows the current service name, and on normal completion (the boot-done
+  service, or the count reaching the total) runs a finished sequence. An idle
+  watchdog runs a distinct fail screen if boot stalls (no service.start for
+  `idle_timeout` seconds), and the bridge resumes the initramfs-suspended splash
+  on start. Configured entirely through UCI (`/etc/config/splash`: global /
+  progress / finished / fail sections) with JSON templates expanded via the
   shared `${NAME}` substitution; it connects straight to the control socket
   (no per-tick `splash-ctl` fork). Built with `make ubus-progress` (links
   libubus/libubox/libuci, reuses cJSON + subst); not part of `all`.
