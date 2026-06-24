@@ -78,7 +78,8 @@ static void print_usage(const char *prog) {
 		"                         the console stays visible; renders off-screen\n"
 		"                         only (for debugging logs live during boot)\n"
 		"  --check                Validate --config without opening DRM and exit\n"
-		"                         (0 = ok); for testing boot configs\n"
+		"                         (0 = ok); for testing boot configs. The device\n"
+		"                         path may be omitted (none is opened)\n"
 		"  --dump <file.png>      Render one frame (from --config) to a PNG and\n"
 		"                         exit; pair with --headless to avoid touching\n"
 		"                         the live console\n"
@@ -307,14 +308,26 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
+	/* --check never opens DRM, so it may run without a device path (build hosts
+	 * have no /dev/dri). Detect it up front so the first argument can be a flag
+	 * instead of a required device. */
+	int want_check = 0;
+	for (int i = 1; i < argc; i++)
+		if (strcmp(argv[i], "--check") == 0) { want_check = 1; break; }
+
+	int parse_start = 2;
 	if (argv[1][0] == '-') {
-		fprintf(stderr, "splash-drm: '%s' is not a DRM device path\n"
-		                "The first argument must be a device (e.g. /dev/dri/card0).\n"
-		                "Run '%s -h' for usage.\n", argv[1], argv[0]);
-		return 1;
+		if (!want_check) {
+			fprintf(stderr, "splash-drm: '%s' is not a DRM device path\n"
+			                "The first argument must be a device (e.g. /dev/dri/card0).\n"
+			                "Run '%s -h' for usage.\n", argv[1], argv[0]);
+			return 1;
+		}
+		device = NULL;      /* unused in check mode; argv[1] is a flag */
+		parse_start = 1;
 	}
 
-	for (int i = 2; i < argc; i++) {
+	for (int i = parse_start; i < argc; i++) {
 		if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
 			config_arg = argv[++i];
 		}

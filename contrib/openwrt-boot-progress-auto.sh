@@ -52,7 +52,7 @@
 #     [ -f /usr/share/splash/openwrt-boot-progress-auto.sh ] && \
 #         . /usr/share/splash/openwrt-boot-progress-auto.sh
 #
-# Your splash startup commands (--cmds / --config) must create the targets:
+# Your splash scene document (--config) must create the targets:
 #   - a "progress" (or "arc") element with id=0   → the progress bar
 #   - a "console"  element with id=0              → the "starting <svc>" log
 # Don't want the log? Set SPLASH_CONSOLE_ID="" before sourcing. All ids, the
