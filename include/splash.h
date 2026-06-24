@@ -444,6 +444,8 @@ typedef struct {
 	int      valign;
 	int      style;
 	float    value;
+	uint32_t value_smooth_ms; /* >0: animate value changes over this many ms */
+	anim_t   value_anim;      /* tween driving `value` toward a new target */
 
 	/* Custom colours (used when style == -1) */
 	uint32_t bg_color;        /* background (empty) colour */
@@ -520,6 +522,8 @@ typedef struct {
 	int      radius;         /* outer radius in px */
 	int      thickness;      /* stroke width in px; 0 = radius/4 */
 	float    value;          /* 0.0 .. 1.0 */
+	uint32_t value_smooth_ms; /* >0: animate value changes over this many ms */
+	anim_t   value_anim;      /* tween driving `value` toward a new target */
 	float    start_angle;    /* degrees, 0=right (3 o'clock), CW; default -90 (top) */
 	float    sweep;          /* total arc degrees; 0 or ≥360 = full circle */
 	uint32_t bg_color;       /* background (unfilled) arc; alpha 0 = hidden */
@@ -643,6 +647,11 @@ void drm_flip(splash_drm_t *ctx);
 /* anim.c */
 uint64_t now_ms(void);
 int      anim_tick(splash_state_t *st, uint64_t now);
+/* Start (or retarget) a float tween that drives *target from `from` to `to`
+ * over `ms` milliseconds, ease-out. Used for smooth progress/arc value changes;
+ * calling it again mid-tween simply retargets from the current value. */
+void     anim_value_start(anim_t *a, float *target,
+                          float from, float to, uint32_t ms);
 
 /* render.c */
 void render_frame(splash_state_t *st);

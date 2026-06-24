@@ -125,6 +125,24 @@ static int run_anim(anim_t *a, uint64_t now,
 	return 1;
 }
 
+/* Start or retarget a float tween onto *target. Reuses run_anim(): with a
+ * non-NULL target and no element/opacity, each tick writes the eased value into
+ * *target only. `from` is normally the current value, so retargeting mid-tween
+ * continues smoothly from where it is instead of jumping. */
+void anim_value_start(anim_t *a, float *target,
+                      float from, float to, uint32_t ms) {
+	a->active        = 1;
+	a->easing        = EASE_IN_OUT;
+	a->from          = from;
+	a->to            = to;
+	a->start_ms      = now_ms();
+	a->duration_ms   = ms;
+	a->remove_on_end = 0;
+	a->repeat        = 0;
+	a->kind          = ANIM_FLOAT;
+	a->target        = target;
+}
+
 /* ========================================================================
  * Per-frame Tick
  *
@@ -221,6 +239,9 @@ int anim_tick(splash_state_t *st, uint64_t now) {
 		if (pb->active && pb->anim.active)
 			active |= run_anim(&pb->anim, now,
 			                           &pb->opacity, &pb->active);
+		/* Smooth value tween: drives `value` toward its new target. */
+		if (pb->active && pb->value_anim.active)
+			active |= run_anim(&pb->value_anim, now, NULL, NULL);
 		/* An indeterminate bar's sweep moves every frame. */
 		if (pb->active && pb->indeterminate)
 			active = 1;
@@ -255,6 +276,9 @@ int anim_tick(splash_state_t *st, uint64_t now) {
 		if (ab->active && ab->anim.active)
 			active |= run_anim(&ab->anim, now,
 			                           &ab->opacity, &ab->active);
+		/* Smooth value tween: drives `value` toward its new target. */
+		if (ab->active && ab->value_anim.active)
+			active |= run_anim(&ab->value_anim, now, NULL, NULL);
 		if (ab->active && ab->indeterminate)
 			active = 1;
 	}

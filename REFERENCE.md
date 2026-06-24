@@ -463,6 +463,7 @@ existing `id` the fields are merged; see
 | `align` | 0–2 | `1` | Horizontal anchor. |
 | `valign` | 0–2 | `1` | Vertical anchor. |
 | `value` | float | `0.0` | Fill level: `0.0` = empty, `1.0` = full. |
+| `smooth` | bool/int | `false` | Animate `value` changes instead of jumping. `true` tweens over 300 ms; a number sets the duration in ms (`0`/`false` = instant). The fill eases (ease-in-out) from its current position to each new `value`; a new `value` mid-tween retargets the running animation rather than restarting it. Ignored on the first `value` and under `indeterminate`. |
 | `style` | int | `0` | Built-in colour theme (0–5). Set to `-1` to use custom colour fields. When a custom colour field is given alongside a style, the bar switches to fully custom colours automatically. |
 | `bg_color` | color | theme | Background track colour. |
 | `bar_color` | color | theme | Fill colour (or first gradient stop). |
@@ -511,6 +512,7 @@ fields are merged; see [merge updates](#creating-updating-hiding-removing-merge-
 | `radius` | int | `80` | Outer radius in pixels. |
 | `thickness` | int | `0` | Stroke width in pixels. `0` = `radius / 4`. |
 | `value` | float | `0.0` | Fill level: `0.0` = empty, `1.0` = full sweep. |
+| `smooth` | bool/int | `false` | Animate `value` changes instead of jumping. `true` tweens over 300 ms; a number sets the duration in ms (`0`/`false` = instant). The fill eases (ease-in-out) from its current position to each new `value`; a new `value` mid-tween retargets the running animation rather than restarting it. Ignored on the first `value` and under `indeterminate`. |
 | `start_angle` | float | `-90` | Angle where the arc starts, in degrees. `0` = right (3 o'clock), `-90` = top (12 o'clock), `90` = bottom, `180` = left. The arc sweeps clockwise. |
 | `sweep` | float | `360` | Total arc length in degrees. `360` = full circle. `270` = three-quarters. `180` = semicircle. Values ≤ 0 or ≥ 360 all produce a full circle. |
 | `bg_color` | color | `#80808080` | Colour of the unfilled (background) portion of the arc. Alpha `0` hides the background arc entirely. |

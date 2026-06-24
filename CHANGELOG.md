@@ -60,6 +60,14 @@ in `docs/SCHEMA-v1.md`; the full reference is `REFERENCE.md`.
   rather than re-blending the write-combining framebuffer each frame.
 - **CSS-like `border` shorthand on progress (cmd.c)** — `border` accepts a
   number, or `false` (0) / `true` (1), as an alias for `border_width`.
+- **`smooth` value animation on progress and arc (cmd.c, anim.c, splash.h)** — a
+  `"smooth"` field makes `value` changes animate instead of jumping: `true`
+  tweens over 300 ms, a number sets the duration in ms (`0`/`false` = instant).
+  The fill eases (ease-in-out) from its current position to each new target, and
+  a new `value` arriving mid-tween retargets the running animation rather than
+  restarting it — so a stream of coarse updates (e.g. a boot bar stepping ~5% at
+  a time) reads as one continuous glide. Reuses the existing tween engine; the
+  first `value` and `indeterminate` mode are unaffected.
 - **ubus-progress: OpenWrt procd boot-progress bridge (ubus-progress/)** — an
   optional C companion that subscribes to procd's `service` ubus object and
   drives the splash from real service.start events: it advances an N-of-total

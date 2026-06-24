@@ -975,6 +975,43 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
  * Progress Bar Commands
  * ======================================================================== */
 
+/* Default duration for a smoothed value change when `smooth` is just `true`. */
+#define VALUE_SMOOTH_DEFAULT_MS 300
+
+/* Parse the `smooth` option shared by progress and arc: `true` -> the default
+ * duration, a number -> that many ms (<=0 disables), `false` -> 0. Absent
+ * returns `cur` so a merge update leaves the setting unchanged. */
+static uint32_t get_smooth_ms(cJSON *args, const char *key, uint32_t cur) {
+	cJSON *j = cJSON_GetObjectItem(args, key);
+	if (!j)
+		return cur;
+	if (cJSON_IsBool(j))
+		return cJSON_IsTrue(j) ? VALUE_SMOOTH_DEFAULT_MS : 0;
+	if (cJSON_IsNumber(j))
+		return j->valueint > 0 ? (uint32_t)j->valueint : 0;
+	return cur;
+}
+
+/* Apply a value update to a progress/arc element, honouring smoothing. When
+ * `smooth_ms` is set and this is a merge update (not a brand-new element), the
+ * change is animated from the current value toward the target; otherwise it is
+ * set instantly and any running tween is cancelled. A value key that is absent
+ * leaves both the value and any in-flight tween untouched. */
+static void apply_value(cJSON *args, float *value, anim_t *value_anim,
+                        uint32_t smooth_ms, int fresh) {
+	if (cJSON_GetObjectItem(args, "value")) {
+		float target = fclamp(get_float(args, "value", *value), 0.0f, 1.0f);
+		if (smooth_ms > 0 && !fresh && target != *value)
+			anim_value_start(value_anim, value, *value, target, smooth_ms);
+		else {
+			*value = target;
+			value_anim->active = 0;
+		}
+	} else if (fresh) {
+		*value = 0;
+	}
+}
+
 static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	int id = get_int(args, "id", -1);
 	if (id < 0) {
@@ -1016,7 +1053,9 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	pb->align        = get_align(args, "align", fresh ? ALIGN_CENTER : pb->align);
 	pb->valign       = get_valign(args, "valign", fresh ? VALIGN_MIDDLE : pb->valign);
 	pb->style        = get_int(args, "style", fresh ? 0 : pb->style);
-	pb->value        = fclamp(get_float(args, "value", fresh ? 0 : pb->value), 0.0f, 1.0f);
+	pb->value_smooth_ms = get_smooth_ms(args, "smooth",
+	                                    fresh ? 0 : pb->value_smooth_ms);
+	apply_value(args, &pb->value, &pb->value_anim, pb->value_smooth_ms, fresh);
 	/* `border` is an undocumented CSS-like shorthand for border_width: a
 	 * number, or false (0) / true (1px). The explicit border_width wins when
 	 * both are present. */
@@ -1803,7 +1842,9 @@ static int cmd_arc(splash_state_t *st, cJSON *args, int client_idx) {
 	ab->thickness   = get_int(args, "thickness", fresh ? 0   : ab->thickness);
 	ab->start_angle = get_float(args, "start_angle", fresh ? -90.0f : ab->start_angle);
 	ab->sweep       = get_float(args, "sweep",        fresh ? 360.0f : ab->sweep);
-	ab->value       = fclamp(get_float(args, "value", ab->value), 0.0f, 1.0f);
+	ab->value_smooth_ms = get_smooth_ms(args, "smooth",
+	                                    fresh ? 0 : ab->value_smooth_ms);
+	apply_value(args, &ab->value, &ab->value_anim, ab->value_smooth_ms, fresh);
 	ab->cap         = get_int(args, "cap",         ab->cap);
 	ab->bar_gradient = get_gradient(args, "bar_gradient", ab->bar_gradient);
 	ab->font_slot   = get_int(args, "font_slot",   fresh ? -1   : ab->font_slot);
