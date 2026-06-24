@@ -55,7 +55,9 @@ in `docs/SCHEMA-v1.md`; the full reference is `REFERENCE.md`.
   `{"system":{"action":"exit","timeout":N,"fade":true}}` fades the whole screen
   to black over the `timeout` window before exiting; `"fade":"#rrggbb"` fades to
   another colour. `splash-ctl --exit --timeout <s> --fade [#color]` builds it.
-  The fade renders even while the daemon is suspended, so it always plays.
+  The fade renders even while the daemon is suspended, so it always plays, and
+  stays smooth at full resolution by fading a cached snapshot of the scene
+  rather than re-blending the write-combining framebuffer each frame.
 - **CSS-like `border` shorthand on progress (cmd.c)** — `border` accepts a
   number, or `false` (0) / `true` (1), as an alias for `border_width`.
 
