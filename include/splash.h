@@ -295,6 +295,7 @@ typedef struct {
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
+	int      hidden;         /* configured but not rendered */
 } text_element_t;
 
 typedef struct {
@@ -312,6 +313,7 @@ typedef struct {
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
+	int      hidden;         /* configured but not rendered */
 } image_overlay_t;
 
 typedef struct {
@@ -338,6 +340,7 @@ typedef struct {
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
+	int      hidden;         /* configured but not rendered */
 } rect_element_t;
 
 typedef struct {
@@ -350,6 +353,7 @@ typedef struct {
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
+	int      hidden;         /* configured but not rendered */
 } ellipse_t;
 
 typedef struct {
@@ -362,6 +366,7 @@ typedef struct {
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
+	int      hidden;         /* configured but not rendered */
 } line_t;
 
 /* A step / boot-stage indicator: a row of dots or pills, `current` of `count`
@@ -383,6 +388,7 @@ typedef struct {
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
+	int      hidden;         /* configured but not rendered */
 } stepper_t;
 
 /* A single line of text scrolling horizontally inside a clip box. */
@@ -408,6 +414,7 @@ typedef struct {
 	uint8_t *cov_cache;
 	int      cov_cache_w, cov_cache_h;
 	int      cov_dirty;       /* 1 = (re)rasterise on the next draw */
+	int      hidden;         /* configured but not rendered */
 } marquee_t;
 
 /* A frame animation: cycles through a list of loaded images at a frame rate. */
@@ -426,6 +433,7 @@ typedef struct {
 
 	float    opacity;         /* 0..1 master alpha */
 	anim_t   anim;            /* optional opacity animation */
+	int      hidden;         /* configured but not rendered */
 } sprite_t;
 
 typedef struct {
@@ -467,6 +475,7 @@ typedef struct {
 	int      indeterminate;
 	uint32_t indet_period_ms; /* time for one sweep */
 	uint64_t indet_start_ms;
+	int      hidden;         /* configured but not rendered */
 } progress_bar_t;
 
 typedef struct {
@@ -500,6 +509,7 @@ typedef struct {
 	uint32_t line_color[CONSOLE_MAX_LINES]; /* per-line override; 0 = use color */
 	float    opacity;
 	anim_t   anim;
+	int      hidden;         /* configured but not rendered */
 } console_t;
 
 /* Circular / arc progress bar. Centre is at (x, y). */
@@ -526,6 +536,7 @@ typedef struct {
 	int      indeterminate;
 	uint32_t indet_period_ms;
 	uint64_t indet_start_ms;
+	int      hidden;         /* configured but not rendered */
 } arc_bar_t;
 
 /* QR code element: encodes text and renders as a grid of modules. */
@@ -543,6 +554,7 @@ typedef struct {
 	int      ecc;             /* error correction: 0=LOW 1=MED 2=QRTL 3=HIGH */
 	float    opacity;
 	anim_t   anim;
+	int      hidden;         /* configured but not rendered */
 } qr_element_t;
 
 /* ========================================================================

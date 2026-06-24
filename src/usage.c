@@ -175,7 +175,7 @@ void print_cmd_help(const char *cmd) {
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
 		"deletes the bar. To update only the value, re-send with the id and\n"
-		"\"value\".\n");
+		"\"value\"; \"hidden\":true hides the bar without losing its state.\n");
 	} else if (strcmp(cmd, "arc") == 0) {
 		fprintf(stderr,
 		"arc — create or reconfigure a circular/arc progress bar\n\n"
@@ -202,7 +202,7 @@ void print_cmd_help(const char *cmd) {
 		"On an existing id, supplied fields are merged (others keep their\n"
 		"current value). \"replace\":true resets to defaults first; \"remove\":true\n"
 		"deletes the arc. To update only the value, re-send with the id and\n"
-		"\"value\".\n");
+		"\"value\"; \"hidden\":true hides the arc without losing its state.\n");
 	} else if (strcmp(cmd, "spinner") == 0) {
 		fprintf(stderr,
 		"spinner — create/show/hide an Apple-style rotating spinner\n\n"

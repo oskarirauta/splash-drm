@@ -1431,7 +1431,7 @@ void render_frame(splash_state_t *st) {
 	/* Image overlays. */
 	for (int i = 0; i < MAX_IMAGE_OVERLAYS; i++) {
 		image_overlay_t *ov = &st->overlays[i];
-		if (!ov->active || !ov->img.rgba)
+		if (!ov->active || ov->hidden || !ov->img.rgba)
 			continue;
 
 		/* Resolve the draw size. If only one of w/h is given, the other
@@ -1469,58 +1469,58 @@ void render_frame(splash_state_t *st) {
 	}
 
 	for (int i = 0; i < MAX_SPRITES; i++) {
-		if (st->sprites[i].active)
+		if (st->sprites[i].active && !st->sprites[i].hidden)
 			draw_sprite(buf, &st->sprites[i]);
 	}
 
 	/* Rectangles, then ellipses, then progress bars, then text, spinners on top. */
 	for (int i = 0; i < MAX_RECTANGLES; i++) {
-		if (st->rects[i].active)
+		if (st->rects[i].active && !st->rects[i].hidden)
 			draw_rect_element(buf, &st->rects[i]);
 	}
 
 	for (int i = 0; i < MAX_ELLIPSES; i++) {
-		if (st->ellipses[i].active)
+		if (st->ellipses[i].active && !st->ellipses[i].hidden)
 			draw_ellipse(buf, &st->ellipses[i]);
 	}
 
 	for (int i = 0; i < MAX_LINES; i++) {
-		if (st->lines[i].active)
+		if (st->lines[i].active && !st->lines[i].hidden)
 			draw_line(buf, &st->lines[i]);
 	}
 
 	for (int i = 0; i < MAX_STEPPERS; i++) {
-		if (st->steppers[i].active)
+		if (st->steppers[i].active && !st->steppers[i].hidden)
 			draw_stepper(buf, &st->steppers[i]);
 	}
 
 	for (int i = 0; i < MAX_PROGRESS_BARS; i++) {
-		if (st->bars[i].active)
+		if (st->bars[i].active && !st->bars[i].hidden)
 			draw_progress_bar(buf, &st->bars[i]);
 	}
 
 	for (int i = 0; i < MAX_ARC_BARS; i++) {
-		if (st->arcs[i].active)
+		if (st->arcs[i].active && !st->arcs[i].hidden)
 			draw_arc_bar(buf, &st->arcs[i], now);
 	}
 
 	for (int i = 0; i < MAX_TEXT_ELEMENTS; i++) {
-		if (st->texts[i].active)
+		if (st->texts[i].active && !st->texts[i].hidden)
 			draw_text_element(buf, &st->texts[i]);
 	}
 
 	for (int i = 0; i < MAX_MARQUEES; i++) {
-		if (st->marquees[i].active)
+		if (st->marquees[i].active && !st->marquees[i].hidden)
 			draw_marquee(buf, &st->marquees[i]);
 	}
 
 	for (int i = 0; i < MAX_CONSOLES; i++) {
-		if (st->consoles[i].active)
+		if (st->consoles[i].active && !st->consoles[i].hidden)
 			draw_console_element(buf, &st->consoles[i]);
 	}
 
 	for (int i = 0; i < MAX_QR_ELEMENTS; i++) {
-		if (st->qrs[i].active)
+		if (st->qrs[i].active && !st->qrs[i].hidden)
 			draw_qr_element(buf, &st->qrs[i]);
 	}
 

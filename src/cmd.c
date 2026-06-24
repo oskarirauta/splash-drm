@@ -446,6 +446,7 @@ static int cmd_text(splash_state_t *st, cJSON *args, int client_idx) {
 	/* Master opacity. Only a fresh element or an explicit opacity cancels a
 	 * running fade, so a merge update can change the text mid-animation. */
 	te->opacity = get_float(args, "opacity", fresh ? 1.0f : te->opacity);
+	te->hidden = get_bool(args, "hidden", fresh ? 0 : te->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		te->anim.active = 0;
 
@@ -531,6 +532,7 @@ static int cmd_rect(splash_state_t *st, cJSON *args, int client_idx) {
 	/* Master opacity. Only a fresh element or an explicit opacity cancels a
 	 * running fade, so a merge update can change the rect mid-animation. */
 	re->opacity = get_float(args, "opacity", fresh ? 1.0f : re->opacity);
+	re->hidden = get_bool(args, "hidden", fresh ? 0 : re->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		re->anim.active = 0;
 
@@ -587,6 +589,7 @@ static int cmd_ellipse(splash_state_t *st, cJSON *args, int client_idx) {
 	e->color     = get_color(args, "color", fresh ? rgb(255, 255, 255) : e->color);
 
 	e->opacity = get_float(args, "opacity", fresh ? 1.0f : e->opacity);
+	e->hidden = get_bool(args, "hidden", fresh ? 0 : e->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		e->anim.active = 0;
 
@@ -641,6 +644,7 @@ static int cmd_line(splash_state_t *st, cJSON *args, int client_idx) {
 	l->color     = get_color(args, "color", fresh ? rgb(255, 255, 255) : l->color);
 
 	l->opacity = get_float(args, "opacity", fresh ? 1.0f : l->opacity);
+	l->hidden = get_bool(args, "hidden", fresh ? 0 : l->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		l->anim.active = 0;
 
@@ -707,6 +711,7 @@ static int cmd_stepper(splash_state_t *st, cJSON *args, int client_idx) {
 	if (s->current > s->count) s->current = s->count;
 
 	s->opacity = get_float(args, "opacity", fresh ? 1.0f : s->opacity);
+	s->hidden = get_bool(args, "hidden", fresh ? 0 : s->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		s->anim.active = 0;
 
@@ -771,6 +776,7 @@ static int cmd_marquee(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	m->opacity = get_float(args, "opacity", fresh ? 1.0f : m->opacity);
+	m->hidden = get_bool(args, "hidden", fresh ? 0 : m->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		m->anim.active = 0;
 
@@ -856,6 +862,7 @@ static int cmd_sprite(splash_state_t *st, cJSON *args, int client_idx) {
 	}
 
 	sp->opacity = get_float(args, "opacity", fresh ? 1.0f : sp->opacity);
+	sp->hidden = get_bool(args, "hidden", fresh ? 0 : sp->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		sp->anim.active = 0;
 
@@ -920,6 +927,7 @@ static int cmd_overlay(splash_state_t *st, cJSON *args, int client_idx) {
 	/* Master opacity; only a fresh element or an explicit opacity cancels a
 	 * running fade. */
 	ov->opacity = get_float(args, "opacity", fresh ? 1.0f : ov->opacity);
+	ov->hidden = get_bool(args, "hidden", fresh ? 0 : ov->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		ov->anim.active = 0;
 
@@ -1059,6 +1067,7 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	/* Master opacity. Only a fresh element or an explicit opacity cancels a
 	 * running fade, so a merge update can change the bar mid-animation. */
 	pb->opacity = get_float(args, "opacity", fresh ? 1.0f : pb->opacity);
+	pb->hidden = get_bool(args, "hidden", fresh ? 0 : pb->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		pb->anim.active = 0;
 
@@ -1554,6 +1563,7 @@ static int cmd_console(splash_state_t *st, cJSON *args, int client_idx) {
 	con->padding   = get_int(args, "padding", fresh ? 4 : con->padding);
 	con->autofit   = get_bool(args, "autofit", fresh ? 0 : con->autofit);
 	con->opacity   = get_float(args, "opacity", fresh ? 1.0f : con->opacity);
+	con->hidden = get_bool(args, "hidden", fresh ? 0 : con->hidden);
 	con->active    = 1;
 
 	/* max_lines: settable on creation; changing it resets the buffer. The
@@ -1785,6 +1795,7 @@ static int cmd_arc(splash_state_t *st, cJSON *args, int client_idx) {
 	ab->font_size   = get_float(args, "font_size", fresh ? 0.0f : ab->font_size);
 	ab->show_percent = get_bool(args, "show_percent", ab->show_percent);
 	ab->opacity     = get_float(args, "opacity", fresh ? 1.0f : ab->opacity);
+	ab->hidden = get_bool(args, "hidden", fresh ? 0 : ab->hidden);
 
 	const char *bg  = get_string(args, "bg_color",    NULL);
 	const char *bar = get_string(args, "bar_color",   NULL);
@@ -1888,6 +1899,7 @@ static int cmd_qr(splash_state_t *st, cJSON *args, int client_idx) {
 	/* Master opacity. Only a fresh element or an explicit opacity cancels a
 	 * running fade, so a merge update can change the QR mid-animation. */
 	qr->opacity = get_float(args, "opacity", fresh ? 1.0f : qr->opacity);
+	qr->hidden = get_bool(args, "hidden", fresh ? 0 : qr->hidden);
 	if (fresh || cJSON_GetObjectItem(args, "opacity"))
 		qr->anim.active = 0;
 
