@@ -39,6 +39,19 @@ static inline uint32_t premultiply(uint32_t color) {
 }
 
 /* Axis-aligned fill - used to clear the framebuffer each frame. */
+/* Source-over blend of a solid (straight-alpha) colour over the whole buffer.
+ * Cheap full-screen alpha fill — no SDF/sqrt, unlike draw_round_rect — used for
+ * the exit fade so it stays smooth at full resolution. */
+static void blend_fullscreen(drm_buffer_t *buf, uint32_t color) {
+	if ((color >> 24) == 0)
+		return;
+	for (uint32_t y = 0; y < buf->height; y++) {
+		uint32_t *line = (uint32_t *)(buf->map + (size_t)y * buf->pitch);
+		for (uint32_t x = 0; x < buf->width; x++)
+			blend_pixel(&line[x], color);
+	}
+}
+
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h,
                       uint32_t color) {
 	/* Write in premultiplied form so blend_pixel reads a consistent
@@ -1370,6 +1383,30 @@ void render_frame(splash_state_t *st) {
 	drm_buffer_t *buf = &st->drm.buf[st->drm.front_buf ^ 1];
 	uint64_t now = now_ms();
 
+	/* During an exit fade, once the scene has been snapshotted, just lerp the
+	 * cached copy toward the fade colour straight into the back buffer: no
+	 * scene re-render and no reads from the write-combining framebuffer (which
+	 * are ~10x slower than cached reads), so the fade stays smooth at full
+	 * resolution. The frozen snapshot also hides any late element redraws. */
+	if (st->fade_active && st->fade_snapshot &&
+	    st->exit_at_ms > st->fade_start_ms) {
+		float p = (float)(now - st->fade_start_ms) /
+		          (float)(st->exit_at_ms - st->fade_start_ms);
+		if (p < 0.0f) p = 0.0f;
+		if (p > 1.0f) p = 1.0f;
+		uint32_t target = st->fade_color | 0xFF000000u;
+		for (uint32_t y = 0; y < buf->height; y++) {
+			uint32_t       *dst = (uint32_t *)(buf->map + (size_t)y * buf->pitch);
+			const uint32_t *src = (const uint32_t *)
+			    (st->fade_snapshot + (size_t)y * (size_t)buf->width * 4);
+			for (uint32_t x = 0; x < buf->width; x++)
+				dst[x] = lerp_color(src[x], target, p);
+		}
+		drm_flip(&st->drm);
+		st->needs_render = 0;
+		return;
+	}
+
 	draw_filled_rect(buf, 0, 0, buf->width, buf->height, st->bg_color);
 
 	/* Outgoing background, underneath, during a crossfade. bg_prev.rgba is
@@ -1529,18 +1566,25 @@ void render_frame(splash_state_t *st) {
 			draw_spinner(buf, &st->spinners[i], now);
 	}
 
-	/* Fade-out overlay on exit: a full-screen colour ramping to opaque between
-	 * fade_start_ms and exit_at_ms, on top of everything. */
-	if (st->fade_active && st->exit_at_ms > st->fade_start_ms) {
-		uint64_t span = st->exit_at_ms - st->fade_start_ms;
-		float p = (float)(now - st->fade_start_ms) / (float)span;
-		if (p < 0.0f) p = 0.0f;
-		if (p > 1.0f) p = 1.0f;
-		uint32_t a = (uint32_t)(p * 255.0f + 0.5f);
-		uint32_t c = (st->fade_color & 0x00FFFFFFu) | (a << 24);
-		paint_t fade = { c, c, GRAD_NONE };
-		draw_round_rect(buf, 0.0f, 0.0f,
-		                (float)buf->width, (float)buf->height, 0.0f, &fade);
+	/* First fade frame: snapshot the freshly rendered scene into a cached
+	 * buffer so every later frame can fade it cheaply (the fast path at the
+	 * top). The one slow read of the WC framebuffer here is a one-off. */
+	if (st->fade_active && !st->fade_snapshot &&
+	    st->exit_at_ms > st->fade_start_ms) {
+		st->fade_snapshot = malloc((size_t)buf->width * buf->height * 4);
+		if (st->fade_snapshot) {
+			for (uint32_t y = 0; y < buf->height; y++)
+				memcpy(st->fade_snapshot + (size_t)y * (size_t)buf->width * 4,
+				       buf->map + (size_t)y * buf->pitch,
+				       (size_t)buf->width * 4);
+		} else {
+			/* Out of memory: fall back to the (slower) blended overlay. */
+			float p = (float)(now - st->fade_start_ms) /
+			          (float)(st->exit_at_ms - st->fade_start_ms);
+			if (p > 1.0f) p = 1.0f;
+			uint32_t a = (uint32_t)(p * 255.0f + 0.5f);
+			blend_fullscreen(buf, (st->fade_color & 0x00FFFFFFu) | (a << 24));
+		}
 	}
 
 	drm_flip(&st->drm);

@@ -610,6 +610,7 @@ int main(int argc, char **argv) {
 	socket_cleanup(&st);
 	clear_all_elements(&st);
 	free_image(&st.bg_image);
+	free(st.fade_snapshot);
 	font_unload_all();
 	drm_cleanup(&st.drm);
 

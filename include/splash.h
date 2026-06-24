@@ -625,6 +625,7 @@ typedef struct {
 	int      fade_active;
 	uint64_t fade_start_ms;
 	uint32_t fade_color;
+	uint8_t *fade_snapshot;      /* cached copy of the scene, for a cheap fade */
 } splash_state_t;
 
 /* ========================================================================
