@@ -50,12 +50,17 @@ install -m0755 ubus-progress/splash-progress.init /etc/init.d/splash-progress
 ## Where it fits in the boot
 
 - The splash **daemon** (`splash-drm`) should start as early as possible — from
-  the initramfs, suspended, then resumed in preinit (a `/lib/preinit/*` hook
-  running `splash-ctl --resume`). It needs only DRM, not ubus.
+  the initramfs, where it is left **suspended** so the boot frame is held on
+  screen. It needs only DRM, not ubus.
 - This **bridge** starts at `START=00` in the main boot phase. It must run after
   `ubusd` is up (so it cannot live in preinit), and `S00` aligns its counting
   window with the `/etc/rc.d/S*` denominator. Earlier than that it would also
   count procd's internal early services, skewing the total.
+- On start the bridge **resumes** the suspended splash itself (`resume` option),
+  so it comes alive exactly when progress begins. The splash content does not
+  change before the bridge takes over, so a separate preinit
+  `splash-ctl --resume` hook is no longer needed (keep it only if you set
+  `resume '0'`).
 
 ## Configuration (`/etc/config/splash`)
 
@@ -83,6 +88,7 @@ config finished 'finished'
 | Option | Section | Meaning |
 |--------|---------|---------|
 | `enabled` | global | `0` exits immediately, drawing nothing. |
+| `resume` | global | `1` (default) resumes the splash on start (it is usually started suspended from the initramfs), so no separate preinit resume hook is needed. `0` to leave that to something else. |
 | `total` | global | `auto` counts `/etc/rc.d/S*`; a number overrides it. |
 | `done_service` | global | Service whose start triggers the finish (empty = only the `total` fallback). |
 | `tick_msg` | progress | Message sent each tick; `${value}` is the 0..1 fraction. Empty = skip. |

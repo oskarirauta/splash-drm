@@ -14,6 +14,7 @@
  *
  *   config global 'global'
  *       option enabled      '1'
+ *       option resume       '1'      # resume the initramfs-suspended splash
  *       option total        'auto'   # 'auto' = count /etc/rc.d/S*, or a number
  *       option done_service 'done'   # service whose start means "boot done"
  *
@@ -58,6 +59,7 @@ extern void json_substitute(cJSON *root);
 static struct {
 	/* [global] */
 	int    enabled;
+	int    resume;         /* resume the (initramfs-suspended) splash on start */
 	int    total;
 	char  *done_service;
 	/* [progress] */
@@ -301,6 +303,7 @@ static void load_config(void)
 {
 	/* Defaults. */
 	cfg.enabled      = 1;
+	cfg.resume       = 1;
 	cfg.total        = 0;
 	cfg.done_service = strdup("done");
 	cfg.hold         = 2;
@@ -315,6 +318,9 @@ static void load_config(void)
 		/* [global] */
 		if ((s = uci_str(uci, "splash.global.enabled"))) {
 			cfg.enabled = atoi(s); free(s);
+		}
+		if ((s = uci_str(uci, "splash.global.resume"))) {
+			cfg.resume = atoi(s); free(s);
 		}
 		char *total = uci_str(uci, "splash.global.total");
 		if (total && strcmp(total, "auto") != 0 && atoi(total) > 0)
@@ -380,6 +386,13 @@ int main(void)
 		fprintf(stderr, "ubus-progress: cannot subscribe to 'service'\n");
 		return 1;
 	}
+
+	/* The splash is typically started suspended from the initramfs and left
+	 * frozen until something drives it. Resuming here, as the bridge takes
+	 * over, removes the need for a separate preinit resume hook. Idempotent:
+	 * harmless if the daemon is already running or not reachable. */
+	if (cfg.resume)
+		splash_send("{\"system\":\"resume\"}");
 
 	uloop_run();
 
