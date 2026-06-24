@@ -1,8 +1,104 @@
 # splash-drm Command Reference
 
-Detailed parameter documentation for every command accepted by the daemon.
-For a quick overview see `README.md`; for per-command help at the terminal
-run `splash-drm --help <cmd>`.
+Detailed parameter documentation for every message the daemon accepts. For a
+quick overview see `README.md`; for per-element help at the terminal run
+`splash-drm --help <type>` or `splash-ctl --help <type>`.
+
+---
+
+## Message model
+
+Every message is a JSON object with **exactly one top-level key** — the
+discriminator. There are three kinds:
+
+| Shape | Meaning |
+|-------|---------|
+| `{"<type>": { ... }}` | An **element** operation (create / update / hide / animate / remove). |
+| `{"system": ... }` | A **daemon** operation (lifecycle and queries). |
+| `{"background": ... }` | Set the **backdrop** colour. |
+
+```json
+{"progress": {"id": 0, "x": -1, "y": "80%", "w": "60%", "value": 0.5}}
+{"system": "exit"}
+{"background": "#0b0e14"}
+```
+
+Send a single message or a JSON **array** of messages (a batch). The element
+type or system action is the key — there is no separate `cmd` field.
+
+### Sending messages with `splash-ctl`
+
+`splash-ctl` takes the JSON from an inline argument, a file, or stdin:
+
+```sh
+splash-ctl '{"text":{"id":0,"text":"Hello"}}'      # inline argument
+splash-ctl --file scene.json                        # from a file
+splash-ctl --file -                                 # explicit stdin
+echo '{"system":"status"}' | splash-ctl             # piped stdin (no flag)
+```
+
+With no inline argument and a piped stdin, stdin is read automatically. System
+shortcuts (`--exit`, `--suspend`, `--resume`, `--status`, `--running`) build the
+JSON for you; see [System operations](#system-operations).
+
+---
+
+## The scene document (`--config`)
+
+The daemon loads its initial scene from a single `--config` document — one JSON
+object holding the fonts, the backdrop, and the elements:
+
+```json
+{
+  "version": 1,
+  "fonts": [
+    {"slot": 0, "path": "DejaVuSans.ttf", "size": 24}
+  ],
+  "background": "#0b0e14",
+  "elements": [
+    {"image":    {"path": "logo.png", "mode": 3}},
+    {"progress": {"id": 0, "x": -1, "y": "80%", "w": "60%", "value": 0}},
+    {"text":     {"id": 99, "x": -1, "y": "20%", "text": "Starting…"}}
+  ]
+}
+```
+
+| Key | Role |
+|-----|------|
+| `version` | Schema version (currently `1`). |
+| `fonts` | Font slots, loaded once at startup. See [Font slots](#appendix-font-slots). |
+| `background` | Backdrop colour (a colour string, or `{"color": "…"}`). |
+| `elements` | The scene: an array of element messages (same grammar as the socket). |
+
+The `elements` array accepts the same single-key messages you send over the
+socket, so anything you can draw at runtime you can also declare in the config.
+
+---
+
+## Variable substitution (`-D`)
+
+Both the daemon (`--config`) and `splash-ctl` expand `${NAME}` placeholders in
+JSON **string values** before the document is parsed. Variables are supplied
+with `-D NAME=value`:
+
+```sh
+splash-ctl '{"text":{"id":1,"text":"${MSG}"}}' -D MSG="Boot failed"
+splash-drm /dev/dri/card0 --config theme.json -D ACCENT="#1894d3"
+```
+
+| Syntax | Meaning |
+|--------|---------|
+| `${NAME}` | Replaced by the value of `NAME`; **empty** (with a warning) if undefined. |
+| `${NAME:-fallback}` | Value of `NAME`, or `fallback` when `NAME` is undefined. |
+| `$${` | A literal `${`. |
+
+A token that is the **whole** value (e.g. `"value": "${V}"`) takes the value's
+native JSON type — a numeric-looking value becomes a number, `true`/`false` a
+boolean. A token embedded in surrounding text (e.g. `"text": "Error: ${MSG}"`)
+stays a string. Because substitution happens on parsed string values, the
+inserted text is JSON-escaped automatically — a value may contain quotes or any
+other character. An undefined numeric field resolves to empty and is left at its
+current/default value, never silently zeroed.
 
 ---
 
@@ -10,42 +106,39 @@ run `splash-drm --help <cmd>`.
 
 ### Element IDs
 
-Every element command requires an `"id"` (integer). The id is chosen freely
-by the caller. Sending a command with an existing id reconfigures that element
-in place; sending one with a new id creates it. There is no auto-increment —
-the caller is responsible for tracking ids.
+Every element message requires an `"id"` (integer), chosen freely by the caller.
+Sending a message with an existing id reconfigures that element in place;
+sending one with a new id creates it. There is no auto-increment — the caller
+tracks ids. Ids are scoped per type, so a `text` with id 0 and a `progress` with
+id 0 are different elements.
 
-### Creating vs. updating elements (merge updates)
+### Creating, updating, hiding, removing (merge updates)
 
-This applies to every element command that takes an `id`: `text`, `rect`,
-`overlay`, `progress`, `arc`, `spinner`, `console`, and `qr`.
+Every element type uses one shape for all of create / update / hide / animate /
+remove. On an existing id, only the fields you pass change:
 
-| Case | Behaviour |
-|------|-----------|
-| **new `id`** | The element is created. Any omitted field takes its default. |
-| **existing `id` (merge)** | Only the fields you supply are changed; every omitted field keeps its **current** value. |
-| **existing `id` + `"replace": true`** | The element is reset to its defaults first, then the supplied fields are applied — so every field you do not supply returns to its default. |
-| **existing `id` + `"remove": true`** | The element is deleted in place, exactly like the matching `remove_*` command. |
+| Field present | Behaviour |
+|---------------|-----------|
+| **new `id`** | The element is created; omitted fields take their defaults. |
+| **existing `id`** (merge) | Only the supplied fields change; every omitted field keeps its **current** value. |
+| `"replace": true` | Reset the element to its defaults first, then apply the supplied fields. |
+| `"remove": true` | Delete the element and free its slot. |
+| `"hidden": true` | Stop drawing the element but keep its slot and state; reveal it again with `"hidden": false`. |
+| `"animate": { … }` | Start a property tween on the element after its fields are applied (see [Animation](#animation)). |
 
 For example, after creating
 
 ```json
-{"cmd":"text","id":0,"x":100,"y":50,"color":"red","size":32,"text":"hello"}
+{"text": {"id": 0, "x": 100, "y": 50, "color": "red", "size": 32, "text": "hello"}}
 ```
 
-sending `{"cmd":"text","id":0,"text":"world"}` redraws "world" at the same
-position, colour, and size — only the text changes. Sending
-`{"cmd":"text","id":0,"text":"world","replace":true}` instead resets the label
-to its defaults (screen centre, white, default font) before applying the new
-text.
+sending `{"text": {"id": 0, "text": "world"}}` redraws "world" at the same
+position, colour, and size — only the text changes. Adding `"replace": true`
+resets the label to its defaults first.
 
 A merge update does **not** cancel a running opacity animation unless you supply
-`opacity` explicitly. This lets you change a field such as a progress `value`
-in the middle of a fade without interrupting the animation.
-
-The dedicated `update_progress`, `update_arc`, `hide_progress`, `hide_arc`, and
-`remove_*` commands still work and are kept as explicit aliases for callers that
-prefer them.
+`opacity` explicitly. This lets you change a field such as a progress `value` in
+the middle of a fade without interrupting the animation.
 
 ### Coordinates and sizes (`x`, `y`, `w`, `h`)
 
@@ -56,8 +149,8 @@ prefer them.
 | negative integer (`-1`) | **screen centre** on that axis — the element is placed at `(screen_dim - element_dim) / 2` regardless of resolution |
 
 Most elements default `x` and `y` to `-1` (centred). Percentage strings are
-resolved at the moment the command is received, so a layout written for one
-resolution scales correctly on any display.
+resolved when the message is received, so a layout written for one resolution
+scales correctly on any display.
 
 ### `align` and `valign`
 
@@ -74,15 +167,16 @@ regardless of its width.
 
 ### `opacity`
 
-Float in the range `0.0` (fully transparent) to `1.0` (fully opaque).
-Applied as a master alpha multiplier on top of any per-pixel alpha already
-in the element's colour or image. Default: `1.0`.
+Float in the range `0.0` (fully transparent) to `1.0` (fully opaque). Applied as
+a master alpha multiplier on top of any per-pixel alpha already in the element's
+colour or image. Default: `1.0`.
 
 ### `color` and colour fields
 
-See the [Colours](#colours) appendix for accepted formats. Short summary:
-named colours (`"white"`, `"transparent"`, …), `"#RGB"`, `"#RRGGBB"`, or
-`"#RRGGBBAA"`. The last two hex digits are alpha (00 = transparent, ff = opaque).
+See the [Colour formats](#appendix-colour-formats) appendix for accepted
+formats. Short summary: named colours (`"white"`, `"transparent"`, …), `"#RGB"`,
+`"#RRGGBB"`, or `"#RRGGBBAA"`. The last two hex digits are alpha (00 =
+transparent, ff = opaque).
 
 ### Drop shadow (`shadow`, `shadow_dx`, `shadow_dy`, `shadow_blur`, `shadow_color`)
 
@@ -96,41 +190,23 @@ Available on `text`, `rect`, and `progress`.
 | `shadow_blur` | int | `4` | Blur radius in pixels. `0` = hard shadow, larger values = softer/more diffuse. |
 | `shadow_color` | color | `#00000080` | Shadow colour. Semi-transparent black is the usual choice. |
 
-### Animation (`animate` command)
+---
 
-An element's opacity, position (`x`/`y`), size (`w`/`h`), or colour can be
-animated after creation, selected by the `property` field. See the
-[`animate`](#animate) section.
+## Background
+
+`{"background": "#101418"}` (or `{"background": {"color": "#101418"}}`) sets the
+solid backdrop drawn before any elements. In the scene document it is the
+top-level `background` field; over the socket it is the same single-key op.
+
+To set a background **image**, use the [`image`](#image) element.
 
 ---
 
-## Commands
-
-### `clear`
-
-Full reset. Removes every element (texts, rects, overlays, progress bars,
-spinners, consoles, arcs, QR codes) and the background image. Loaded fonts
-are preserved and do not need to be reloaded.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `color` | color | `#000000` | Backdrop colour to set after clearing. |
-
----
-
-### `bg_color`
-
-Set the solid background colour that is drawn before any elements.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `color` | color | `#000000` | Background colour. |
-
----
+## Elements
 
 ### `image`
 
-Set or replace the background image.
+Set or replace the full-screen background image.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -145,7 +221,7 @@ Set or replace the background image.
 | Value | Name | Behaviour |
 |-------|------|-----------|
 | `0` | Cover | Scale to fill the screen, cropping the image if the aspect ratios differ. No letterboxing. |
-| `1` | Contain | Scale to fit entirely within the screen. Letterbox bars are filled with `bg_color`. |
+| `1` | Contain | Scale to fit entirely within the screen. Letterbox bars are filled with the backdrop colour. |
 | `2` | Stretch | Scale to exactly fill the screen, ignoring the aspect ratio. |
 | `3` | None | Draw at native pixel size, centred. |
 | `4` | Custom | Scale by the `scale` factor, centred. |
@@ -161,13 +237,10 @@ Set or replace the background image.
 
 ---
 
-### `text` / `remove_text`
+### `text`
 
-Add, update, or remove a text label. Supports UTF-8, kerning, and
-sub-pixel positioning. On an existing `id` the supplied fields are **merged**
-into the current element (see [merge updates](#creating-vs-updating-elements-merge-updates));
-`"replace": true` resets to defaults first and `"remove": true` deletes the
-element (equivalent to `remove_text`).
+Add or update a text label. Supports UTF-8, kerning, and sub-pixel positioning.
+On an existing `id` the fields are merged; see [merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -193,14 +266,11 @@ element (equivalent to `remove_text`).
 
 ---
 
-### `rect` / `remove_rect`
+### `rect`
 
-Add, update, or remove a rectangle. Can be filled, outlined, or both.
-Supports rounded corners, gradient fills, and drop shadows. On an existing `id`
-the supplied fields are **merged** into the current element (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the element (equivalent to
-`remove_rect`).
+Add or update a rectangle. Can be filled, outlined, or both. Supports rounded
+corners, gradient fills, and drop shadows. On an existing `id` the fields are
+merged; see [merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -227,15 +297,12 @@ resets to defaults first and `"remove": true` deletes the element (equivalent to
 
 ---
 
-### `ellipse` / `circle` / `remove_ellipse` / `remove_circle`
+### `ellipse` / `circle`
 
-Add, update, or remove an ellipse or circle. `circle` is an alias for `ellipse`
-and produces the same element. Can be filled or drawn as an outline ring. The
-centre is at `(x, y)`. On an existing `id` the supplied fields are **merged**
-into the current element (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the element (equivalent to
-`remove_ellipse` / `remove_circle`).
+Add or update an ellipse or circle. `circle` is an alias for `ellipse` and
+produces the same element. Can be filled or drawn as an outline ring. The centre
+is at `(x, y)`. On an existing `id` the fields are merged; see
+[merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -249,19 +316,13 @@ resets to defaults first and `"remove": true` deletes the element (equivalent to
 | `color` | color | `white` | Fill colour (filled) or ring colour (outline). |
 | `opacity` | float | `1.0` | Master alpha. |
 
-`query` (type `ellipse` or `circle`) returns `x`, `y`, `rx`, `ry`, `thickness`,
-and `opacity`. Opacity can be animated with the [`animate`](#animate) command.
-
 ---
 
-### `line` / `remove_line`
+### `line`
 
-Add, update, or remove a straight line, typically used as a divider. The line
-runs from `(x1, y1)` to `(x2, y2)`. On an existing `id` the supplied fields are
-**merged** into the current element (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the element (equivalent to
-`remove_line`).
+Add or update a straight line, typically used as a divider. The line runs from
+`(x1, y1)` to `(x2, y2)`. On an existing `id` the fields are merged; see
+[merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -275,21 +336,14 @@ resets to defaults first and `"remove": true` deletes the element (equivalent to
 | `color` | color | `white` | Line colour. |
 | `opacity` | float | `1.0` | Master alpha. |
 
-`query` (type `line`) returns `x1`, `y1`, `x2`, `y2`, `thickness`, and
-`opacity`. Opacity can be animated with the [`animate`](#animate) command.
-
 ---
 
-### `stepper` / `remove_stepper`
+### `stepper`
 
 A step / boot-stage indicator: a centred row of dots or pills where the first
-`current` of `count` steps are drawn as "done". Advance `current` as boot
-progresses — typically with a merge update such as
-`{"cmd":"stepper","id":0,"current":3}`. On an existing `id` the supplied fields
-are **merged** into the current element (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the element (equivalent to
-`remove_stepper`).
+`current` of `count` steps are drawn as "done". Advance `current` with a merge
+update such as `{"stepper": {"id": 0, "current": 3}}`. On an existing `id` the
+fields are merged; see [merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -309,21 +363,14 @@ resets to defaults first and `"remove": true` deletes the element (equivalent to
 | `color_todo` | color | dim grey | Colour of remaining steps. |
 | `opacity` | float | `1.0` | Master alpha. |
 
-`query` (type `stepper`) returns `x`, `y`, `count`, `current`, and `opacity`.
-Opacity can be animated with the [`animate`](#animate) command.
-
 ---
 
-### `marquee` / `remove_marquee`
+### `marquee`
 
 A single line of text that scrolls horizontally inside a clip box. The text
-repeats with `gap` spacing for a seamless loop and is clipped to the box, so
-content wider than the box scrolls smoothly across it. Like `text` and
-`console`, it requires a font slot to be loaded (via `--config` or a config
-file). On an existing `id` the supplied fields are **merged** into the current
-element (see [merge updates](#creating-vs-updating-elements-merge-updates));
-`"replace": true` resets to defaults first and `"remove": true` deletes the
-element (equivalent to `remove_marquee`).
+repeats with `gap` spacing for a seamless loop and is clipped to the box. Like
+`text` and `console`, it requires a font slot to be loaded. On an existing `id`
+the fields are merged; see [merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -340,20 +387,14 @@ element (equivalent to `remove_marquee`).
 | `gap` | int | `60` | Gap between repetitions in pixels, for the seamless loop. |
 | `opacity` | float | `1.0` | Master alpha. |
 
-`query` (type `marquee`) returns `text`, `x`, `y`, `w`, `h`, `speed`, and
-`opacity`. Opacity can be animated with the [`animate`](#animate) command.
-
 ---
 
-### `sprite` / `remove_sprite`
+### `sprite`
 
 A frame animation: cycles through a list of loaded images (frames) at a fixed
 frame rate — for example an animated logo or a custom spinner. The frames are
-loaded once when the element is created. On an existing `id` the supplied fields
-are **merged** into the current element (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the element (equivalent to
-`remove_sprite`).
+loaded once when the element is created. On an existing `id` the fields are
+merged; see [merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -371,19 +412,15 @@ resets to defaults first and `"remove": true` deletes the element (equivalent to
 | `opacity` | float | `1.0` | Master alpha. |
 
 On a merge update, `frames` reloads **only** when supplied — omitting it keeps
-the running animation. `query` (type `sprite`) returns `x`, `y`, the frame
-`count`, the current frame, `fps`, and `opacity`. Opacity can be animated with
-the [`animate`](#animate) command.
+the running animation.
 
 ---
 
-### `overlay` / `remove_overlay`
+### `overlay`
 
-Add, update, or remove a bitmap image drawn on top of the background. On an
-existing `id` the supplied fields are **merged** into the current element (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the element (equivalent to
-`remove_overlay`).
+A bitmap image drawn on top of the background (as opposed to the full-screen
+`image`). On an existing `id` the fields are merged; see
+[merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -408,14 +445,13 @@ bilinear sampling.
 
 ---
 
-### `progress` / `update_progress` / `hide_progress` / `remove_progress`
+### `progress`
 
 Horizontal progress bar. Supports built-in colour themes, custom colours,
-gradient fill, percentage label, and indeterminate (sweeping highlight) mode.
-On an existing `id` the supplied fields are **merged** into the current bar (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the bar (equivalent to
-`remove_progress`).
+gradient fill, percentage label, and indeterminate (sweeping highlight) mode. To
+update the bar mid-boot, re-send with the same `id` and a new `value`. On an
+existing `id` the fields are merged; see
+[merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -434,7 +470,7 @@ resets to defaults first and `"remove": true` deletes the bar (equivalent to
 | `bar_gradient` | int | `0` | Gradient direction along the fill: same values as `grad_dir` on `rect`. `gradient` is accepted as a legacy alias. |
 | `border_color` | color | theme | Border colour. |
 | `text_color` | color | theme | Percentage label colour. |
-| `border_width` | int | `2` | Border thickness in pixels. `0` = no border. On a very thin bar the border is capped so the fill always keeps at least 1px. |
+| `border_width` | int | `2` | Border thickness in pixels. `0` = no border. `border` is an undocumented shorthand that also accepts `false` (0) / `true` (1). On a very thin bar the border is capped so the fill always keeps at least 1px. |
 | `radius` | int | `0` | Corner radius in pixels. |
 | `font_slot` | int | `0` | Font slot for the percentage label. `font` is accepted as an alias. |
 | `font_size` | float | `0` | Font size for the percentage label. `0` = auto (roughly half the bar height). `size` is accepted as an alias. |
@@ -447,16 +483,6 @@ resets to defaults first and `"remove": true` deletes the bar (equivalent to
 | `shadow_blur` | int | `12` | Shadow blur radius. |
 | `shadow_color` | color | `#00000078` | Shadow colour. |
 | `opacity` | float | `1.0` | Master alpha. |
-
-**`update_progress`** accepts `id`, `value`, and optionally `indeterminate`.
-All other fields are unchanged.
-
-**`hide_progress`** accepts `id` only. The element is deactivated (hidden) but
-its configuration is preserved, so a later `progress` command with the same id
-can restore it.
-
-**`remove_progress`** accepts `id` only. Fully clears the slot and returns it
-to the pool.
 
 **Built-in styles**
 
@@ -471,13 +497,11 @@ to the pool.
 
 ---
 
-### `arc` / `update_arc` / `hide_arc` / `remove_arc`
+### `arc`
 
-Circular or arc-shaped progress indicator. The centre is at `(x, y)`. On an
-existing `id` the supplied fields are **merged** into the current arc (see
-[merge updates](#creating-vs-updating-elements-merge-updates)); `"replace": true`
-resets to defaults first and `"remove": true` deletes the arc (equivalent to
-`remove_arc`).
+Circular or arc-shaped progress indicator. The centre is at `(x, y)`. To update
+the fill, re-send with the same `id` and a new `value`. On an existing `id` the
+fields are merged; see [merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -502,23 +526,14 @@ resets to defaults first and `"remove": true` deletes the arc (equivalent to
 | `indet_period_ms` | int | `1200` | Duration of one full rotation in indeterminate mode. |
 | `opacity` | float | `1.0` | Master alpha. |
 
-**`update_arc`** accepts `id`, `value`, and optionally `bar_color`.
-
-**`hide_arc`** accepts `id` only. Deactivates the element without removing it;
-the slot is preserved and a later `arc` command with the same `id` restores it.
-
-**`remove_arc`** accepts `id` only. Fully clears the slot and returns it to
-the pool.
-
 ---
 
-### `spinner` / `remove_spinner`
+### `spinner`
 
 Apple-style rotating spinner made of fading spokes. The centre is at `(x, y)`.
-On an existing `id` the supplied fields are **merged** into the current spinner
-(see [merge updates](#creating-vs-updating-elements-merge-updates));
-`"replace": true` resets to defaults first and `"remove": true` deletes the
-spinner (equivalent to `remove_spinner`).
+On an existing `id` the fields are merged; see
+[merge updates](#creating-updating-hiding-removing-merge-updates). The spinner
+also has its own `action` field for animated show/hide.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -531,8 +546,8 @@ spinner (equivalent to `remove_spinner`).
 | `period` | int | `900` | Duration of one full rotation in milliseconds. |
 | `action` | string | `"show"` | Visibility action — see table below. |
 | `duration` | int | `300` | Fade duration in milliseconds for `"show_animated"` / `"hide_animated"`. Ignored by the instant `"show"` / `"hide"` actions. |
-| `easing` | string or int | `"ease_in_out"` | Easing curve for the animated actions (same values as the [`animate`](#animate) command). |
-| `hidden` | bool | `false` | Alternative to `action`: configure the spinner without making it visible yet, ready to be revealed later with `"show_animated"`. |
+| `easing` | string or int | `"ease_in_out"` | Easing curve for the animated actions (same values as [Animation](#animation)). |
+| `hidden` | bool | `false` | Configure the spinner without making it visible yet, ready to be revealed later with `"show_animated"`. |
 | `opacity` | float | `1.0` | Master alpha. |
 
 **`action`**
@@ -544,23 +559,15 @@ spinner (equivalent to `remove_spinner`).
 | `"show_animated"` | Reveal the spinner with an opacity fade-in over `duration` ms using `easing`. |
 | `"hide_animated"` | Fade the spinner out over `duration` ms using `easing`, then stop rendering. |
 
-**`remove_spinner`** accepts `id` only. Deactivates the spinner in place, like
-the other `remove_*` commands. (Use `action: "hide"` instead if you want to keep
-the slot configuration for a later reveal.)
-
 ---
 
-### `console` / `console_write` / `remove_console`
+### `console`
 
 A fixed-position scrolling text area. Lines are stored in a circular ring
-buffer; when the buffer is full the oldest line is discarded. Lines are
-anchored to the bottom of the area — as the count grows from zero, new lines
-appear at the bottom and earlier lines stack upward.
-
-On an existing `id` the supplied `console` fields are **merged** into the current
-console (see [merge updates](#creating-vs-updating-elements-merge-updates));
-`"replace": true` resets to defaults first and `"remove": true` deletes the
-console (equivalent to `remove_console`).
+buffer; when the buffer is full the oldest line is discarded. Lines are anchored
+to the bottom of the area — new lines appear at the bottom and earlier lines
+stack upward. On an existing `id` the fields are merged; see
+[merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -571,30 +578,33 @@ console (equivalent to `remove_console`).
 | `h` | coord | `200` | Height in pixels. |
 | `font_slot` | int | `0` | Font slot. |
 | `size` | float | `0` | Font size in pixels. `0` = use the font slot's loaded size. |
-| `color` | color | `white` | Text colour. |
+| `color` | color | `white` | Default text colour. |
 | `bg_color` | color | `transparent` | Background fill. Alpha `0` = fully transparent (no background). |
 | `padding` | int | `4` | Inner margin between the area's edges and the text, in pixels. |
-| `max_lines` | int | `32` | Ring buffer capacity. Maximum `64`. Reducing this on an existing console clears the buffer. |
+| `max_lines` | int | `64` | Ring buffer capacity. Maximum `64`. Reducing this on an existing console clears the buffer. |
+| `write` | string | — | Append a log line; `\n` splits into multiple lines. See below. |
 | `opacity` | float | `1.0` | Master alpha applied to both text and background. |
 
-**`console_write`**
+**Writing lines.** A `"write"` string appends one (or, with `\n`, several) lines
+to the buffer. It composes with configuration in the same message — you can
+create a console and write to it at once. When `"write"` is present, the
+`"color"` field colours **that line** instead of setting the console's default
+text colour, so a single console can mix colours (e.g. green ok / yellow warn /
+red fail). Each line keeps the colour it was written with.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | int | Console element to write to (required). |
-| `text` | string | Text to append. A `\n` in the string splits the content into multiple separate lines, each occupying one ring buffer slot. |
-| `color` | color | Colour for the line(s) being written. Omit to use the console's own default colour. Each line keeps the colour it was written with, so a single console can mix colours — handy for severity-coloured boot logs (green ok / yellow warn / red fail). |
+```json
+{"console": {"id": 0, "x": "10%", "y": "80%", "w": "80%", "h": "15%"}}
+{"console": {"id": 0, "write": "Starting network…", "color": "#9fd2ff"}}
+```
 
 ---
 
-### `qr` / `remove_qr`
+### `qr`
 
 Encodes a text payload as a QR Code and renders it as a grid of filled
 rectangles. The QR Code version (size) is chosen automatically to fit the
-content. On an existing `id` the supplied fields are **merged** into the current
-element (see [merge updates](#creating-vs-updating-elements-merge-updates));
-`"replace": true` resets to defaults first and `"remove": true` deletes the
-element (equivalent to `remove_qr`).
+content. On an existing `id` the fields are merged; see
+[merge updates](#creating-updating-hiding-removing-merge-updates).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -613,47 +623,48 @@ element (equivalent to `remove_qr`).
 
 ---
 
-### `animate`
+## Animation
 
-Animate an element property over time. The animation runs in the background;
-the daemon continues to process commands while it plays. The `property` field
-selects what is animated — opacity (the default), position, size, or colour.
+Animation is a **field on an element**, not a separate message: an `"animate"`
+object on an element op starts a tween once the element's own fields are
+applied. The animation runs in the background while the daemon keeps processing
+messages. The `property` field selects what is animated — opacity (the default),
+position, size, or colour.
+
+```json
+{"text": {"id": 0, "animate": {"to": 0, "duration": 400, "remove_on_end": true}}}
+```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `type` | string | — | Element type to animate: `"text"`, `"rect"`, `"overlay"`, `"progress"`, `"arc"`, `"spinner"`, `"console"`, `"qr"` (required). |
-| `id` | int | — | Element id (required). |
 | `property` | string | `"opacity"` | What to animate — see the property table below. |
-| `from` | float / int / color | current value | Start value. If omitted, the element's current value for the chosen property is used. Type depends on `property` (see below). |
+| `from` | float / int / color | current value | Start value. If omitted, the element's current value for the chosen property is used. |
 | `to` | float / int / color | — | End value (required). Type depends on `property`. |
 | `duration` | int | — | Animation duration in milliseconds (required). |
 | `easing` | string or int | `"ease_out"` | Easing curve — see table below. |
 | `repeat` | bool | `false` | Loop the animation in ping-pong fashion (`from`→`to`→`from`→…). |
 | `remove_on_end` | bool | `false` | Deactivate (remove) the element when the animation reaches its end. Useful for fade-out transitions. |
 
+The element being animated is identified by the enclosing message — the `type`
+and `id` come from the element op, so the `animate` object only carries the
+tween parameters.
+
 **Properties (`property`)**
 
 | Value | `from`/`to` type | Effect |
 |-------|------------------|--------|
-| `"opacity"` | float `0.0`–`1.0` | Master alpha (the default; behaves as before). |
+| `"opacity"` | float `0.0`–`1.0` | Master alpha (the default). |
 | `"x"` | int (pixels) | Move the element horizontally. |
 | `"y"` | int (pixels) | Move the element vertically. |
 | `"w"` | int (pixels) | Resize / grow the element's width. |
 | `"h"` | int (pixels) | Resize / grow the element's height. |
 | `"color"` | color | Colour transition, interpolated per channel (RGBA lerp). |
 
-For `x`/`y`/`w`/`h` the `from`/`to` values are pixel integers; for `color` they
-are colours (named or hex); for `opacity` they are `0.0`–`1.0` floats as before.
-When `from` is omitted it defaults to the element's current value for that
-property. `duration`, `easing`, `repeat`, and `remove_on_end` work identically
-for every property.
-
-Each element type can animate only the properties it actually has. Most
-elements support `opacity`, `x`, and `y`. `w`/`h` additionally work on `rect`,
-`marquee`, `console`, `sprite`, `progress`, `overlay`, and `ellipse`. `color`
-additionally works on `text`, `rect`, `ellipse`, `line`, `marquee`, `console`,
-`spinner`, and `qr`. Requesting a property an element does not support returns
-an error.
+Each element type can animate only the properties it actually has. Most elements
+support `opacity`, `x`, and `y`. `w`/`h` additionally work on `rect`, `marquee`,
+`console`, `sprite`, `progress`, `overlay`, and `ellipse`. `color` additionally
+works on `text`, `rect`, `ellipse`, `line`, `marquee`, `console`, `spinner`, and
+`qr`. Requesting a property an element does not support is a no-op.
 
 **Easing curves**
 
@@ -666,16 +677,68 @@ an error.
 
 ---
 
+## System operations
+
+Daemon lifecycle and queries are sent under the `system` key, either as a string
+shorthand for a parameter-less action or as an object with an `action`:
+
+```json
+{"system": "status"}
+{"system": {"action": "exit", "timeout": 4}}
+```
+
+| Action | Parameters | Description |
+|--------|------------|-------------|
+| `exit` | `timeout` (int, default 0) | Clean shutdown. With `timeout` the daemon keeps rendering for that many seconds first. |
+| `suspend` | — | Freeze rendering; the display keeps whatever was last shown. |
+| `resume` | — | Restart rendering after `suspend`. |
+| `clear` | `color` (color) | Remove every element and set the backdrop to `color` (default black). Loaded fonts are kept. |
+| `status` | — | Return the daemon state (see below). |
+| `version` | — | Return the running daemon's version string. |
+| `running` | — | Liveness probe; a reply means the daemon is up (see below). |
+| `ready` | — | Mark the daemon ready (`"ready": true` in status). |
+| `query` | `type`, `id` | Read back an element's current state (see below). |
+
+### `exit`
+
+Without `timeout` the daemon exits as soon as it has sent the reply. With
+`timeout` it keeps rendering and accepting messages for that many seconds, then
+shuts down — so you can show a final message or play a fade-out first. The client
+gets an `ok` reply immediately in both cases.
+
+```json
+{"text": {"id": 99, "text": "System ready", "size": 48}}
+{"system": {"action": "exit", "timeout": 3}}
+```
+
+`splash-ctl --exit` (optionally `--timeout <s>`) builds these for you.
+
+### `status`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `state` | string | `"running"` or `"suspended"` (after `suspend`). |
+| `ready` | bool | `true` after the `ready` action has been sent. |
+| `hidden` | bool | `true` when the display is blanked by the ESC keyboard toggle. |
+| `width` | int | Display width in pixels. |
+| `height` | int | Display height in pixels. |
+
+### `running`
+
+A reply can only come from a live daemon, so this always answers
+`{"status":"ok","running":true}`. `splash-ctl --running` reports `running` /
+`not running` and exits `0` / `1` without ever failing on a connection error,
+so scripts get a boolean even when the daemon is down.
+
 ### `query`
 
-Read back the current state of any named element. Useful for scripts that need
-to know the current progress value before deciding whether to send an update
-(e.g. to avoid driving a value backwards when parallel init scripts race).
+Read back the current state of any element — useful for scripts that need the
+current value before deciding whether to send an update (e.g. to avoid driving a
+value backwards when parallel init scripts race).
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `type` | string | Element type: `"text"`, `"rect"`, `"overlay"`, `"progress"`, `"arc"`, `"spinner"`, `"console"`, `"qr"` (required). |
-| `id` | int | Element id (required). |
+```json
+{"system": {"action": "query", "type": "arc", "id": 0}}
+```
 
 The response always includes `"status": "ok"`, `"x"`, `"y"`, and `"opacity"`.
 Type-specific fields:
@@ -690,62 +753,6 @@ Type-specific fields:
 | `spinner` | `"active"` |
 | `console` | `"w"`, `"h"`, `"line_count"` |
 | `qr` | `"text"` (encoded payload) |
-
----
-
-### `status`
-
-Query the daemon's current state. Takes no parameters.
-
-Response fields:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `state` | string | `"running"` or `"suspended"` (after `suspend`). |
-| `ready` | bool | `true` after the `ready` command has been sent. |
-| `hidden` | bool | `true` when the display is blanked by the ESC keyboard toggle. |
-| `width` | int | Display width in pixels. |
-| `height` | int | Display height in pixels. |
-
----
-
-### `suspend` / `resume`
-
-`suspend` freezes rendering: the daemon stops compositing frames. The display
-retains whatever was last shown. `resume` restarts rendering. Both commands
-take no parameters.
-
----
-
-### `ready`
-
-Marks the daemon as ready. Sets `"ready": true` in the `status` response.
-Intended for external health checks — the daemon's behaviour is otherwise
-unaffected. Takes no parameters.
-
----
-
-### `exit`
-
-Requests a clean shutdown: the daemon restores the display to the state saved
-at startup, then exits.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `delay` | int | `0` | Seconds to wait before exiting. `0` exits immediately. |
-
-Without `delay` the daemon exits as soon as it has sent the reply. With
-`delay` it continues rendering and accepting commands for that many seconds,
-then shuts down automatically. This allows displaying a final message or
-running a fade-out animation before the process ends.
-
-```json
-{"cmd": "text", "id": 99, "text": "System ready", "size": 48}
-{"cmd": "exit", "delay": 3}
-```
-
-The client receives an `ok` reply immediately in both cases; the delay only
-affects when the daemon process actually terminates.
 
 ---
 
@@ -779,39 +786,39 @@ splash-drm <drm_device> [options]
 
 | Option | Description |
 |--------|-------------|
-| `--config <file\|json>` | Load font configuration at startup (see [Font slots](#appendix-font-slots)). Accepts a file path or an inline JSON string. |
-| `--cmds <file\|json>` | Execute a batch of commands immediately after startup, before the event loop begins. Accepts a file path or an inline JSON string. |
-| `--fork` | Fork to the background before entering the event loop. The parent process exits immediately, returning control to the caller. **Recommended for initramfs use** — the child calls `setsid()` after forking, creating a new session with no controlling terminal, so `switch_root` and shell exit cannot deliver `SIGHUP` to the daemon. Without `--fork`, a best-effort `setsid()` is attempted, but it silently fails when the shell's job-control places the process in its own process group. |
-| `--timeout <seconds>` | Watchdog: exit automatically if no command arrives within this many seconds. Useful as a safety net so a stuck boot script cannot leave the splash on screen indefinitely. |
+| `--config <file\|json>` | Load the scene document (fonts, background, elements). Accepts a file path or an inline JSON string. |
+| `-D NAME=value` | Define a substitution variable; `${NAME}` in the config is expanded before parsing. Repeatable. |
+| `--fork` | Fork to the background before entering the event loop. The parent exits immediately. **Recommended for initramfs use** — the child calls `setsid()`, creating a new session with no controlling terminal, so `switch_root` and shell exit cannot deliver `SIGHUP` to the daemon. |
+| `--timeout <seconds>` | Watchdog: exit automatically if no message arrives within this many seconds. A safety net so a stuck boot cannot leave the splash on screen forever. |
 | `--headless` | Initialise DRM but never program the CRTC, so the console stays visible; renders off-screen only. See [below](#headless-and-config-check-modes). |
-| `--check` | Validate `--config`/`--cmds` without opening DRM, then exit (`0` = ok). See [below](#headless-and-config-check-modes). |
-| `--dump <file.png>` | Render one frame from `--config`/`--cmds` to a PNG file, then exit — no daemon loop and no control socket. Uses the connected display's resolution. Pair with `--headless` to render without touching the live console. See [below](#headless-and-config-check-modes). |
+| `--check` | Validate `--config` (structure, known element types, parameters) without opening DRM, then exit (`0` = ok). See [below](#headless-and-config-check-modes). |
+| `--dump <file.png>` | Render one frame from `--config` to a PNG file, then exit — no daemon loop and no control socket. Pair with `--headless` to render without touching the live console. |
 | `-q`, `--quiet` | Silence all output (even errors). |
 | `-v`, `-vv`, `-vvv` | Increase log verbosity (info / debug / trace). See [Logging](#logging). |
 | `--debug` | Alias for `-vv` (debug verbosity). |
 | `--log <target>` | Log sink: `auto` (default), `stderr`, `syslog`, or `kmsg`. See [Logging](#logging). |
 | `-V`, `--version` | Print version and exit. |
 | `-h`, `--help` | Print usage summary and exit. |
-| `--help <cmd>` | Print full parameter list for a command (e.g. `--help arc`). |
+| `--help <type>` | Print the full parameter list for an element type or system action. |
 
 ### Recommended initramfs invocation
 
 ```sh
-splash-drm /dev/dri/card0 --fork --config /etc/splash/config.json \
-    --cmds '[{"cmd":"image","path":"/etc/splash/bg.png"},{"cmd":"spinner","id":0}]'
+splash-drm /dev/dri/card0 --fork --config /etc/splash/scene.json
 
 # … mount real root, etc. …
 
-splash-ctl '{"cmd":"suspend"}'
+splash-ctl '{"system":"suspend"}'
 exec switch_root /sysroot /sbin/init
 ```
 
 In the new root's init scripts:
 
 ```sh
-splash-ctl '{"cmd":"resume"}'
+splash-ctl '{"system":"resume"}'
 # … update progress as services start …
-splash-ctl '{"cmd":"exit"}'
+splash-ctl '{"progress":{"id":0,"value":0.5}}'
+splash-ctl '{"system":"exit"}'
 ```
 
 `--fork` makes the `&` shell operator unnecessary and guarantees the daemon
@@ -825,47 +832,48 @@ failures. Verbosity flags raise the level — `-v` enables `INFO`, `-vv` enables
 `DEBUG`, and `-vvv` enables `TRACE`; `--debug` is an alias for `-vv`. `-q` /
 `--quiet` silences everything, including errors.
 
-`--log` selects the sink. A foreground run logs to `stderr`. A `--fork`ed
-daemon has its stdio redirected to `/dev/null`, so it falls back to the syslog
-socket `/dev/log` and then the kernel log `/dev/kmsg`. The default `auto`
-follows that order; `stderr`, `syslog`, and `kmsg` force a specific sink
-regardless of forking. Syslog messages are tagged `splash-drm[pid]` at the
-`daemon` facility.
+`--log` selects the sink. A foreground run logs to `stderr`. A `--fork`ed daemon
+has its stdio redirected to `/dev/null`, so it falls back to the syslog socket
+`/dev/log` and then the kernel log `/dev/kmsg`. The default `auto` follows that
+order; `stderr`, `syslog`, and `kmsg` force a specific sink regardless of
+forking. Syslog messages are tagged `splash-drm[pid]` at the `daemon` facility.
 
 ### Headless and config-check modes
 
-`--headless` initialises DRM and reads the connected display's mode — it needs
-a connected display to size its buffers — but never programs the CRTC. The
-kernel console and live log output therefore stay visible. This is useful
-during the initramfs→rootfs boot: you can watch boot messages and live logs
-without the splash covering them. Rendering still runs off-screen, so the
-render path is exercised even though nothing reaches the panel.
+`--headless` initialises DRM and reads the connected display's mode — it needs a
+connected display to size its buffers — but never programs the CRTC. The kernel
+console and live log output therefore stay visible. Useful during the
+initramfs→rootfs boot: you can watch boot messages without the splash covering
+them. Rendering still runs off-screen, so the render path is exercised.
 
-`--check` validates a boot configuration (`--config`/`--cmds` JSON: structure,
-known commands, and their parameters) on a build host without opening DRM or
-touching the referenced asset files. It exits non-zero on structural problems,
-making it a quick way to catch a typo before deploying to an initramfs.
+`--check` validates a scene document (`--config` JSON: structure, known element
+types, and their parameters) on a build host without opening DRM or touching the
+referenced asset files. It exits non-zero on structural problems, making it a
+quick way to catch a typo before deploying to an initramfs.
 
-`--dump <file.png>` renders a single frame from `--config`/`--cmds` to a PNG file
-and then exits. It sizes the image to the connected display's resolution but runs
-neither the daemon loop nor the control socket, so it never collides with a
-running daemon's abstract name. Combined with `--headless` it renders entirely
-off-screen, leaving the live console untouched — handy for previewing a boot
-configuration on a build host or capturing golden frames for regression testing.
+`--dump <file.png>` renders a single frame from `--config` to a PNG and exits. It
+sizes the image to the connected display's resolution but runs neither the
+daemon loop nor the control socket. Combined with `--headless` it renders
+entirely off-screen — handy for previewing a scene on a build host or capturing
+golden frames for regression testing.
 
 ---
 
 ## Appendix: Font slots
 
-Fonts are loaded once at startup via `--config` and referenced by slot index
-(0–4) in element commands. Up to 5 fonts can be loaded simultaneously.
+Fonts are loaded once at startup via the scene document's `fonts` array and
+referenced by slot index (0–4) in element messages. Up to 5 fonts can be loaded
+simultaneously.
 
 ```json
-{"fonts": [
-  {"slot": 0, "path": "DejaVuSans.ttf",      "size": 24},
-  {"slot": 1, "path": "DejaVuSans-Bold.ttf", "size": 24},
-  {"slot": 2, "path": "DejaVuSans.ttf",      "size": 14}
-]}
+{
+  "version": 1,
+  "fonts": [
+    {"slot": 0, "path": "DejaVuSans.ttf",      "size": 24},
+    {"slot": 1, "path": "DejaVuSans-Bold.ttf", "size": 24},
+    {"slot": 2, "path": "DejaVuSans.ttf",      "size": 14}
+  ]
+}
 ```
 
 The `path` is resolved using the same prefix search as images: bare names are

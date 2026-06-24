@@ -33,7 +33,7 @@ Two programs are built:
 - **Arc/circular progress bar** — circular ring indicator with optional round
   end caps, sweep gradient, and indeterminate spinning mode.
 - **Scrolling log console** — a fixed-position text area that displays the
-  most recent N lines pushed via `console_write`. Grows from the bottom.
+  most recent N lines pushed via the console `write` field. Grows from the bottom.
 - **QR code element** — encodes any text payload and renders it as a pixel
   grid (nayuki/qrcodegen, vendored as a submodule).
 - **ESC keyboard toggle** — pressing ESC blanks the splash; pressing it again
@@ -86,20 +86,20 @@ splash-drm <drm_device> [options]
 
 | Option | Description |
 |--------|-------------|
-| `--config <file\|json>` | Load configuration (font slots). Inline JSON or a file path. |
-| `--cmds <file\|json>` | Run an initial batch of commands on startup. |
+| `--config <file\|json>` | Load the scene document (fonts, background, elements). Inline JSON or a file path. |
+| `-D NAME=value` | Define a substitution variable; `${NAME}` in the config is expanded before parsing. Repeatable. |
 | `--fork` | Fork to background; parent exits immediately. **Recommended for initramfs use** — the child calls `setsid()` after forking, so `switch_root` cannot deliver `SIGHUP` to the daemon. Without this flag, no `&` is needed but session detachment is best-effort only. |
-| `--timeout <seconds>` | Exit if no command arrives for this long (watchdog). |
+| `--timeout <seconds>` | Exit if no message arrives for this long (watchdog). |
 | `--headless` | Initialise DRM but never program the CRTC, so the console stays visible; renders off-screen only. |
-| `--check` | Validate `--config`/`--cmds` without opening DRM, then exit (`0` = ok). |
-| `--dump <file.png>` | Render one frame from `--config`/`--cmds` to a PNG file, then exit (no daemon loop, no control socket). Pair with `--headless` to render without touching the live console. |
+| `--check` | Validate `--config` without opening DRM, then exit (`0` = ok). |
+| `--dump <file.png>` | Render one frame from `--config` to a PNG file, then exit (no daemon loop, no control socket). Pair with `--headless` to render without touching the live console. |
 | `-q`, `--quiet` | Silence all output (even errors). |
 | `-v`, `-vv`, `-vvv` | Log threshold: info / debug / trace (each includes the lower levels, so warnings already show at `-v`). |
 | `--debug` | Alias for `-vv` (debug verbosity). |
 | `--log <target>` | Log sink: `auto` (default), `stderr`, `syslog`, or `kmsg`. |
 | `-V`, `--version` | Print the version and exit. |
 | `-h`, `--help` | Print usage summary and exit. |
-| `--help <cmd>` | Show all parameters for a specific command. |
+| `--help <type>` | Show all parameters for an element type or system action. |
 
 ### Logging
 
@@ -128,25 +128,34 @@ the initramfs→rootfs boot, where you can watch boot messages without the
 splash covering them. Rendering still happens off-screen, so the render path
 is exercised even though nothing reaches the panel.
 
-`--check` validates a boot configuration (`--config`/`--cmds` JSON — structure,
+`--check` validates a boot configuration (`--config` JSON — structure,
 known commands, and parameters) on a build host without opening DRM or touching
 the referenced asset files. It exits non-zero on structural problems, so it is
 a quick way to catch a typo before deploying to an initramfs.
 
-`--dump <file.png>` renders a single frame from `--config`/`--cmds` to a PNG file
+`--dump <file.png>` renders a single frame from `--config` to a PNG file
 and exits, using the connected display's resolution for the image. It does not
 run the daemon loop or open the control socket, so it never collides with a
 running daemon. Pair it with `--headless` to render without touching the live
 console — useful to preview a boot configuration or to capture golden frames for
 testing.
 
-The configuration JSON carries font slots and optional startup defaults:
+The scene document carries the fonts, the backdrop, and the elements drawn at
+startup:
 
 ```json
-{"fonts": [
-  {"slot": 0, "path": "DejaVuSans.ttf", "size": 24},
-  {"slot": 1, "path": "DejaVuSans-Bold.ttf", "size": 18}
-]}
+{
+  "version": 1,
+  "fonts": [
+    {"slot": 0, "path": "DejaVuSans.ttf", "size": 24},
+    {"slot": 1, "path": "DejaVuSans-Bold.ttf", "size": 18}
+  ],
+  "background": "#0b0e14",
+  "elements": [
+    {"image": {"path": "splash.png", "mode": 1}},
+    {"text":  {"id": 0, "y": "70%", "text": "Booting…"}}
+  ]
+}
 ```
 
 Font and image paths are searched in order:
@@ -157,44 +166,49 @@ Font and image paths are searched in order:
 
 ## Controlling the splash
 
-`splash-ctl` sends one command — a JSON object or array of objects — to the
-running daemon and prints the reply.
+`splash-ctl` sends one message — a single-key object or an array of them — to
+the running daemon and prints the reply. The JSON comes from an inline argument,
+`--file <path>` (`-` for stdin), or a piped stdin:
 
 ```bash
 splash-ctl '<json>'
-splash-ctl --file <json-file>
+splash-ctl --file scene.json
+echo '<json>' | splash-ctl                       # piped stdin, no flag
 ```
 
 ```bash
-splash-ctl '{"cmd":"image","path":"splash.png","crossfade":600}'
-splash-ctl '{"cmd":"arc","id":0,"value":0.75}'
-splash-ctl '[{"cmd":"arc","id":0,"value":1.0},{"cmd":"exit"}]'
+splash-ctl '{"image":{"path":"splash.png","crossfade":600}}'
+splash-ctl '{"arc":{"id":0,"value":0.75}}'
+splash-ctl '[{"arc":{"id":0,"value":1.0}},{"system":"exit"}]'
+splash-ctl '{"text":{"id":1,"text":"${MSG}"}}' -D MSG="Boot failed"
 ```
 
 Useful client flags: `--raw` prints the daemon's raw JSON reply, `--file` reads
-the JSON from a file, `-V` / `--version` prints **this client's** build, and
-`--daemon-version` asks the **running daemon** what version it is:
+the JSON from a file (`-` = stdin), `-D NAME=value` expands `${NAME}` tokens,
+`-V` / `--version` prints **this client's** build, and `--daemon-version` asks
+the **running daemon** what version it is:
 
 ```bash
 splash-ctl --daemon-version      # → splash-drm daemon v4.0.1
 ```
 
-The "system" commands also have shorthand flags, so init scripts can keep them
-visually distinct from the drawing commands instead of burying them in JSON:
+The system operations also have shorthand flags, so init scripts can keep them
+visually distinct from the drawing messages instead of burying them in JSON:
 
 ```bash
 splash-ctl --status              # print the daemon status JSON
 splash-ctl --running             # "running" / "not running", exit 0 / 1
-splash-ctl --suspend             # {"cmd":"suspend"} — freeze rendering
-splash-ctl --resume              # {"cmd":"resume"}  — resume rendering
-splash-ctl --exit                # {"cmd":"exit"}    — shut the daemon down
-splash-ctl --exit --timeout 3    # {"cmd":"exit","delay":3} — exit after 3 s
+splash-ctl --suspend             # {"system":"suspend"} — freeze rendering
+splash-ctl --resume              # {"system":"resume"}  — resume rendering
+splash-ctl --exit                # {"system":"exit"}    — shut the daemon down
+splash-ctl --exit --timeout 3    # exit after 3 s
 ```
 
 `--running` is a liveness probe that never fails with a connection error: it
-prints `running` / `not running` and exits `0` / `1`. The raw `{"cmd":"running"}`
-form always prints `{"running":true}` or `{"running":false}` instead, so a
-script gets a boolean even when the daemon is down:
+prints `running` / `not running` and exits `0` / `1`. The raw
+`{"system":"running"}` form always prints `{"running":true}` or
+`{"running":false}` instead, so a script gets a boolean even when the daemon is
+down:
 
 ```bash
 if splash-ctl --running >/dev/null; then echo "splash is up"; fi
@@ -208,103 +222,81 @@ the answer. The version is also included in the `status` reply.
 
 ## Command reference
 
-Every command is a JSON object with a `cmd` field. Use `splash-drm --help <cmd>`
-for a quick parameter list at the terminal, or see
+Every message is a single-key JSON object — `{"<type>": {…}}` for an element,
+`{"system": …}` for daemon control, `{"background": …}` for the backdrop. Use
+`splash-drm --help <type>` for a quick parameter list at the terminal, or see
 [`REFERENCE.md`](REFERENCE.md) for the full documentation including parameter
 types, default values, and detailed descriptions.
 
-Elements are addressed by a caller-chosen integer `id`; sending a command for
+Elements are addressed by a caller-chosen integer `id`; sending a message for
 an existing `id` updates that element in place.
 
-### Creating vs. updating elements (merge updates)
+### Creating, updating, hiding, removing (merge updates)
 
-Every element command that takes an `id` — `text`, `rect`, `overlay`,
-`progress`, `arc`, `spinner`, `console`, and `qr` — distinguishes between
-creating and updating:
+Every element type uses one message shape for create / update / hide / animate /
+remove, keyed by an `id`:
 
 - **New `id`** — the element is created. Any field you omit takes its default.
-- **Existing `id` (merge)** — only the fields you supply are changed; every
-  field you omit keeps its current value. For example, after creating
-  `{"cmd":"text","id":0,"x":100,"y":50,"color":"red","size":32,"text":"hello"}`,
-  sending `{"cmd":"text","id":0,"text":"world"}` redraws "world" at the same
+- **Existing `id` (merge)** — only the fields you supply change; every omitted
+  field keeps its current value. After
+  `{"text":{"id":0,"x":100,"y":50,"color":"red","size":32,"text":"hello"}}`,
+  sending `{"text":{"id":0,"text":"world"}}` redraws "world" at the same
   position, colour, and size.
-
-Two modifiers override the merge behaviour on an existing `id`:
-
 - **`"replace": true`** — reset the element to its defaults first, then apply
-  the supplied fields. Every field you do not supply returns to its default.
-- **`"remove": true`** — delete the element in place. This is equivalent to the
-  matching `remove_*` command.
+  the supplied fields.
+- **`"remove": true`** — delete the element and free its slot.
+- **`"hidden": true`** — stop drawing the element but keep its slot and state;
+  reveal it again with `"hidden": false`.
+- **`"animate": {…}`** — tween a property after the fields are applied (see
+  the [Animation](REFERENCE.md#animation) section in the reference).
 
 A merge update does **not** cancel a running opacity animation unless you supply
 `opacity` explicitly, so you can change e.g. a progress `value` in the middle of
 a fade.
 
-The dedicated `update_progress`, `update_arc`, `hide_progress`, `hide_arc`, and
-all `remove_*` commands still work and are kept as explicit aliases for callers
-that prefer them.
+### System operations
 
-### Lifecycle
+Sent under the `system` key — a string shorthand or `{"action": "…", …}`:
 
-| Command | Purpose |
-|---------|---------|
-| `clear` | Full reset: remove every element and the background. Loaded fonts are kept. |
-| `suspend` / `resume` | Freeze or resume rendering. |
-| `status` | Query daemon state. Returns `version`, `state`, `ready`, `hidden`, `width`, `height`. |
-| `version` | Return the running daemon's version (`{"status":"ok","version":"…"}`). Since 4.0.1; older daemons reply `unknown command`. |
-| `running` | Liveness probe; a live daemon always returns `{"status":"ok","running":true}`. Since 4.0.2. Backs `splash-ctl --running`, which reports `not running` (never a connection error) when the daemon is down. |
-| `ready` | Mark the daemon as ready (for external polling). |
-| `exit` | Tell the daemon to shut down cleanly. Optional `delay` (seconds) keeps it rendering before exiting. |
+| `{"system": …}` | Purpose |
+|-----------------|---------|
+| `"clear"` (or `{"action":"clear","color":…}`) | Full reset: remove every element, set the backdrop. Loaded fonts are kept. |
+| `"suspend"` / `"resume"` | Freeze or resume rendering. |
+| `"status"` | Daemon state: `state`, `ready`, `hidden`, `width`, `height`. |
+| `"version"` | Running daemon version. Since 4.0.1; older daemons reply `unknown command`. |
+| `"running"` | Liveness probe; a live daemon returns `{"status":"ok","running":true}`. Backs `splash-ctl --running`, which never fails on a connection error. |
+| `"ready"` | Mark the daemon as ready (for external polling). |
+| `{"action":"exit","timeout":N}` | Shut down cleanly. Optional `timeout` (seconds) keeps rendering first. |
+| `{"action":"query","type":T,"id":N}` | Read back element state — position, `value`/`text`, `opacity`, and type-specific fields. |
 
-### Background
+### Backdrop
 
-| Command | Purpose |
-|---------|---------|
-| `bg_color` | Set the solid backdrop colour (`color`). |
-| `image` | Set the background image (`path`, `mode`, `scale`, `filter`, `crossfade`). |
+`{"background": "#rrggbb"}` (or `{"background": {"color": "…"}}`) sets the solid
+backdrop drawn before the elements. For a background **image**, use the `image`
+element below.
 
-### Elements
+### Element types
 
-Element commands that take an `id` create the element on a new `id` and **merge**
-into it on an existing `id` (only supplied fields change). Pass `"replace": true`
-to reset to defaults first, or `"remove": true` to delete the element in place.
-See [Creating vs. updating elements](#creating-vs-updating-elements-merge-updates).
+Each is a single-key message `{"<type>": {…}}`. On an existing `id` the fields
+merge; `"remove"` / `"hidden"` / `"replace"` / `"animate"` work as above. See
+[`REFERENCE.md`](REFERENCE.md) for full per-type parameter tables.
 
-| Command | Purpose |
-|---------|---------|
-| `text` | Add or update a text label (`text`, `x`, `y`, `align`, `valign`, `color`, `font`, `size`, `wrap`, `wrap_width`, `shadow`, `shadow_dx`, `shadow_dy`, `shadow_blur`, `shadow_color`, `outline`, `outline_color`, `opacity`). |
-| `remove_text` | Remove a text element by `id`. |
-| `rect` | Add or update a rectangle (`x`, `y`, `w`, `h`, `color`, `fill`, `radius`, `border_color`, `border_width`, `grad_color`, `grad_dir`, `shadow`, `shadow_dx`, `shadow_dy`, `shadow_blur`, `shadow_color`, `opacity`). |
-| `remove_rect` | Remove a rectangle by `id`. |
-| `ellipse` / `circle` | Add or update an ellipse or circle (`x`, `y`, `radius`, `rx`, `ry`, `thickness`, `color`, `opacity`). `circle` is an alias. |
-| `remove_ellipse` / `remove_circle` | Remove an ellipse / circle by `id`. |
-| `line` | Add or update a line / divider (`x1`, `y1`, `x2`, `y2`, `thickness`, `cap`, `color`, `opacity`). |
-| `remove_line` | Remove a line by `id`. |
-| `stepper` | Add or update a step / boot-stage indicator (`x`, `y`, `align`, `valign`, `count`, `current`, `style`, `size`, `length`, `gap`, `thickness`, `color_done`, `color_todo`, `opacity`). |
-| `remove_stepper` | Remove a stepper by `id`. |
-| `marquee` | Add or update horizontally-scrolling text (`x`, `y`, `w`, `h`, `text`, `font`, `size`, `color`, `speed`, `gap`, `opacity`). |
-| `remove_marquee` | Remove a marquee by `id`. |
-| `sprite` | Add or update a frame animation of cycled images (`frames`, `x`, `y`, `w`, `h`, `align`, `valign`, `filter`, `fps`, `loop`, `opacity`). |
-| `remove_sprite` | Remove a sprite by `id`. |
-| `overlay` | Add or update an image overlay (`path`, `x`, `y`, `w`, `h`, `align`, `valign`, `filter`, `radius`, `angle`, `tint`, `opacity`). `radius` clips to rounded corners, `angle` rotates, `tint` applies a multiply tint. On a merge update `path` may be omitted to keep the current image. |
-| `remove_overlay` | Remove an image overlay by `id`. |
-| `progress` | Create or reconfigure a horizontal progress bar (`x`, `y`, `w`, `h`, `align`, `valign`, `value`, `style`, `bg_color`, `bar_color`, `bar_color2`, `bar_gradient`, `border_color`, `text_color`, `borderless`, `border_width`, `radius`, `font_slot`, `font_size`, `show_percent`, `indeterminate`, `indet_period_ms`, `shadow`, `opacity`). |
-| `update_progress` | Update a bar's `value` and optionally toggle `indeterminate`. |
-| `hide_progress` | Hide a progress bar (preserves slot configuration). |
-| `remove_progress` | Remove a progress bar and free the slot. |
-| `arc` | Create or reconfigure a circular progress bar (`x`, `y`, `radius`, `thickness`, `value`, `start_angle`, `sweep`, `cap`, `bg_color`, `bar_color`, `bar_color2`, `bar_gradient`, `font_slot`, `font_size`, `text_color`, `show_percent`, `indeterminate`, `indet_period_ms`, `opacity`). |
-| `update_arc` | Update an arc's `value` and optionally `bar_color`. |
-| `hide_arc` | Hide an arc element (preserves slot configuration). |
-| `remove_arc` | Remove an arc element and free the slot. |
-| `spinner` | Create / show / hide an Apple-style rotating spinner (`x`, `y`, `radius`, `spokes`, `color`, `period`, `action`, `opacity`). |
-| `remove_spinner` | Remove (deactivate) a spinner by `id`. |
-| `console` | Create or reconfigure a scrolling log area (`x`, `y`, `w`, `h`, `font_slot`, `size`, `color`, `bg_color`, `padding`, `autofit`, `max_lines`, `opacity`). `autofit:true` snaps the drawn height down to whole text rows so a full log fills the box with no leftover gap. |
-| `console_write` | Push one or more lines of text into a console (`id`, `text`; `\n` splits into separate lines). |
-| `remove_console` | Remove a console element by `id`. |
-| `qr` | Create or update a QR code element (`text`, `x`, `y`, `align`, `valign`, `module_px`, `border`, `ecc`, `color`, `bg_color`, `opacity`). |
-| `remove_qr` | Remove a QR code element by `id`. |
-| `animate` | Animate an element's opacity, position (`x`/`y`), size (`w`/`h`), or colour (`type`, `id`, `property`, `from`, `to`, `duration`, `easing`, `repeat`, `remove_on_end`). |
-| `query` | Read back current element state (`type`, `id`). Returns position, `value`/`text`, `opacity`, and type-specific fields. |
+| Type | Purpose |
+|------|---------|
+| `image` | Full-screen background image (`path`, `mode`, `scale`, `filter`, `crossfade`). |
+| `text` | Text label (`text`, `x`, `y`, `align`, `valign`, `color`, `font`, `size`, `wrap`, `wrap_width`, `shadow…`, `outline`, `outline_color`, `opacity`). |
+| `rect` | Rectangle (`x`, `y`, `w`, `h`, `color`, `fill`, `radius`, `border_color`, `border_width`, `grad_color`, `grad_dir`, `shadow…`, `opacity`). |
+| `ellipse` / `circle` | Ellipse or circle (`x`, `y`, `radius`, `rx`, `ry`, `thickness`, `color`, `opacity`). `circle` is an alias. |
+| `line` | Line / divider (`x1`, `y1`, `x2`, `y2`, `thickness`, `cap`, `color`, `opacity`). |
+| `stepper` | Step / boot-stage indicator (`x`, `y`, `align`, `valign`, `count`, `current`, `style`, `size`, `length`, `gap`, `thickness`, `color_done`, `color_todo`, `opacity`). |
+| `marquee` | Horizontally-scrolling text (`x`, `y`, `w`, `h`, `text`, `font`, `size`, `color`, `speed`, `gap`, `opacity`). |
+| `sprite` | Frame animation of cycled images (`frames`, `x`, `y`, `w`, `h`, `align`, `valign`, `filter`, `fps`, `loop`, `opacity`). |
+| `overlay` | Image overlay (`path`, `x`, `y`, `w`, `h`, `align`, `valign`, `filter`, `radius`, `angle`, `tint`, `opacity`). `radius` clips rounded corners, `angle` rotates, `tint` multiplies. |
+| `progress` | Horizontal progress bar (`x`, `y`, `w`, `h`, `value`, `style`, `bg_color`, `bar_color`, `bar_color2`, `bar_gradient`, `border_color`, `text_color`, `border_width`, `radius`, `font_slot`, `font_size`, `show_percent`, `indeterminate`, `shadow`, `opacity`). Re-send with `value` to update. |
+| `arc` | Circular progress bar (`x`, `y`, `radius`, `thickness`, `value`, `start_angle`, `sweep`, `cap`, `bg_color`, `bar_color`, `bar_color2`, `bar_gradient`, `font_slot`, `font_size`, `text_color`, `show_percent`, `indeterminate`, `opacity`). |
+| `spinner` | Apple-style rotating spinner (`x`, `y`, `radius`, `spokes`, `color`, `period`, `action`, `opacity`). |
+| `console` | Scrolling log area (`x`, `y`, `w`, `h`, `font_slot`, `size`, `color`, `bg_color`, `padding`, `max_lines`, `opacity`); a `"write":"line"` field appends text (`\n` splits lines). |
+| `qr` | QR code (`text`, `x`, `y`, `align`, `valign`, `module_px`, `border`, `ecc`, `color`, `bg_color`, `opacity`). |
 
 ### Colours
 
@@ -363,37 +355,36 @@ can keep driving the same daemon instance.
 ```sh
 # Start the daemon (--fork detaches cleanly; no & needed).
 splash-drm /dev/dri/card0 --fork \
-    --config /etc/splash/config.json \
-    --cmds   /etc/splash/boot.json \
+    --config /etc/splash/scene.json \
     --timeout 120
 
 # Drive progress from boot scripts.
-splash-ctl '{"cmd":"arc","id":0,"value":0.5}'
+splash-ctl '{"arc":{"id":0,"value":0.5}}'
 
 # Suspend before switch_root so the daemon is idle during the transition.
-splash-ctl '{"cmd":"suspend"}'
+splash-ctl '{"system":"suspend"}'
 exec switch_root /sysroot /sbin/init
 ```
 
-The `--cmds` scene (`boot.json`) is what every later `splash-ctl` call drives, so
-it must create the elements those calls target. For the OpenWrt auto-progress hook
-(the boot-progress section below) that means a `progress` and a `console` element,
-both `id=0` — [`examples/openwrt-boot.json`](examples/openwrt-boot.json) is ready to
-use as that file (lift just those two commands into your own `boot.json` if your
-init already draws its own background and defaults).
+The `--config` scene document (`scene.json`) declares the elements every later
+`splash-ctl` call drives, so it must create the ones those calls target. For the
+OpenWrt auto-progress hook (the boot-progress section below) that means a
+`progress` and a `console` element, both `id=0` —
+[`examples/openwrt-boot.json`](examples/openwrt-boot.json) is ready to use as
+that document.
 
 In the new root's init scripts:
 
 ```sh
 # Resume the daemon that survived switch_root.
-splash-ctl '{"cmd":"resume"}'
+splash-ctl '{"system":"resume"}'
 
 # Query current value before updating (avoids going backwards).
-val=$(splash-ctl '{"cmd":"query","type":"arc","id":0}')
+val=$(splash-ctl '{"system":{"action":"query","type":"arc","id":0}}')
 
 # Show a final message and exit after 3 seconds.
-splash-ctl '{"cmd":"text","id":99,"text":"System ready","size":48}'
-splash-ctl '{"cmd":"exit","delay":3}'
+splash-ctl '{"text":{"id":99,"text":"System ready","size":48}}'
+splash-ctl '{"system":{"action":"exit","timeout":3}}'
 ```
 
 See `examples/` for complete configuration examples and `contrib/` for
@@ -417,7 +408,7 @@ by `make install`):
       . /usr/share/splash/openwrt-boot-progress-auto.sh
   ```
 
-  Your startup commands must create a `progress` (or `arc`) element with
+  Your scene document must declare a `progress` (or `arc`) element with
   `id=0` and a `console` element with `id=0`. The target ids, bar type,
   colour and matched actions are overridable via environment variables
   documented at the top of the script. It self-limits: each update is a
@@ -437,13 +428,12 @@ bar — so
 
 ```sh
 splash-drm /dev/dri/card0 \
-    --config /etc/splash/fonts.json \
-    --cmds   /usr/share/splash/examples/openwrt-boot.json
+    --config /usr/share/splash/examples/openwrt-boot.json
 ```
 
 plus the one-line `rc.common` hook above is a complete, no-configuration boot
-splash. (It only needs a font in slot 0 from `--config`, e.g.
-`{"fonts":[{"slot":0,"path":"/usr/share/splash/fonts/regular.ttf"}]}`.)
+splash. The document's `fonts` section loads slot 0; adjust the path to a font
+present on your system.
 
 The same approach works on Alpine Linux with minor adjustments for OpenRC.
 
