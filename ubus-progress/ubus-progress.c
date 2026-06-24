@@ -16,8 +16,8 @@
  *   config global 'global'
  *       option enabled      '1'
  *       option resume       '1'      # resume the initramfs-suspended splash
- *       option total        'auto'   # 'auto' = count /etc/rc.d/S*, or a number
- *       option done_event   'boot.done'  # ubus "service event" type = boot done
+ *       option total        'auto'   # 'auto' = count procd-service S## scripts
+ *       option done_event   'boot.done'  # optional failsafe: service event type
  *       option done_service 'done'   # service.start name that means "boot done"
  *       option idle_timeout '60'     # run idle_action if idle for Ns (0 = off)
  *       option idle_action  'finished'   # finished (settled) | fail (stalled)
@@ -77,6 +77,7 @@ static struct {
 	char  *idle_action;    /* "finished" (boot settled) | "fail" (stalled) */
 	char  *done_service;   /* service.start name that means "boot done" */
 	char  *done_event;     /* ubus "service event" type that means "boot done" */
+	char  *self_script;    /* our own /etc/init.d name, excluded from the total */
 	/* [progress] */
 	char  *tick_msg;
 	char  *status_msg;
@@ -374,12 +375,60 @@ static int uci_list(struct uci_context *uci, const char *path, char ***out)
 	return 0;
 }
 
-static int count_boot_scripts(void)
+/* Does this init script register a procd service (and so fire service.start)? */
+static int is_procd_service(const char *name)
+{
+	char path[256];
+	snprintf(path, sizeof(path), "/etc/init.d/%s", name);
+
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return 0;
+
+	char line[512];
+	int procd = 0;
+	while (fgets(line, sizeof(line), f)) {
+		if (strstr(line, "USE_PROCD=1") ||
+		    strstr(line, "procd_open_instance")) {
+			procd = 1;
+			break;
+		}
+	}
+	fclose(f);
+	return procd;
+}
+
+/* Estimate the number of service.start events the bridge will observe: the
+ * enabled boot scripts (/etc/rc.d/S*) that are procd services AND run after the
+ * bridge's own script (`self`). The one-shot setup scripts (fstab, sysctl,
+ * done, …) never fire a service.start, so counting them over-estimates and the
+ * bar tops out early; the bridge's own script and anything before it ran before
+ * it subscribed, so their events were missed and must not be counted either.
+ * /etc/rc.d/S* is iterated in boot (sorted) order. Recomputed every boot, so
+ * adding or removing services is reflected automatically. */
+static int count_boot_scripts(const char *self)
 {
 	int n = 0;
 	glob_t g;
 	if (glob("/etc/rc.d/S*", 0, NULL, &g) == 0) {
-		n = (int)g.gl_pathc;
+		for (size_t i = 0; i < g.gl_pathc; i++) {
+			/* "/etc/rc.d/S20network" -> "network" */
+			const char *base = strrchr(g.gl_pathv[i], '/');
+			base = base ? base + 1 : g.gl_pathv[i];
+			if (*base == 'S') {
+				base++;
+				while (*base >= '0' && *base <= '9')
+					base++;
+			}
+			/* Our own script: drop everything counted so far (it ran before
+			 * we subscribed) and count only what comes after. */
+			if (self && *self && strcmp(base, self) == 0) {
+				n = 0;
+				continue;
+			}
+			if (is_procd_service(base))
+				n++;
+		}
 		globfree(&g);
 	}
 	return n > 0 ? n : 1;
@@ -395,6 +444,7 @@ static void load_config(void)
 	cfg.idle_action  = strdup("finished");
 	cfg.done_service = strdup("done");
 	cfg.done_event   = strdup("boot.done");
+	cfg.self_script  = strdup("splash-progress");
 	cfg.hold         = 2;
 	cfg.fin_action   = strdup("none");
 	cfg.fin_timeout  = 1;
@@ -430,6 +480,9 @@ static void load_config(void)
 		}
 		if ((s = uci_str(uci, "splash.global.done_event"))) {
 			free(cfg.done_event); cfg.done_event = s;
+		}
+		if ((s = uci_str(uci, "splash.global.self_script"))) {
+			free(cfg.self_script); cfg.self_script = s;
 		}
 
 		/* [progress] */
@@ -472,7 +525,7 @@ static void load_config(void)
 	}
 
 	if (cfg.total <= 0)
-		cfg.total = count_boot_scripts();
+		cfg.total = count_boot_scripts(cfg.self_script);
 }
 
 int main(void)

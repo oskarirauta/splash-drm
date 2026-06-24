@@ -64,11 +64,15 @@ in `docs/SCHEMA-v1.md`; the full reference is `REFERENCE.md`.
   optional C companion that subscribes to procd's `service` ubus object and
   drives the splash from real service.start events: it advances an N-of-total
   bar, shows the current service name, and on completion runs a finished
-  sequence (filling the bar to 100% first, since the S## count is approximate).
-  Completion is signalled by a ubus "service event" (`done_event`, e.g. fired
-  from /etc/rc.local — procd has no boot-complete event), a service.start name,
-  or the count; an idle watchdog is the fallback, configurable to treat the
-  quiet as a settled boot or a stall (a distinct fail screen). It also resumes
+  sequence. The denominator counts only the procd-service `/etc/rc.d/S*` scripts
+  that run after the bridge itself — the ones that actually fire `service.start`
+  — so the bar reaches ~100% at the real end of boot instead of topping out
+  early (one-shot setup scripts and anything before the bridge are excluded;
+  recomputed every boot, so service changes are tracked). Completion is signalled
+  by the count reaching `total` (primary), a ubus "service event" (`done_event`,
+  an optional failsafe fired from /etc/rc.local), or a service.start name; an
+  idle watchdog is the fallback, configurable to treat the quiet as a settled
+  boot or a stall (a distinct fail screen). It also resumes
   the initramfs-suspended splash on start. Configured entirely through UCI
   (`/etc/config/splash`: global / progress / finished / fail sections) with JSON
   templates expanded via the shared `${NAME}` substitution; it connects straight

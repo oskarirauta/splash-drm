@@ -14,15 +14,19 @@ you want a small always-on daemon driven by real procd service events.
 
 - Subscribes to the procd `service` object; each `service.start` notification
   (`{"service":"<name>"}`) is one tick.
-- The denominator is the boot-script count (`/etc/rc.d/S*`), or a fixed `total`.
+- The denominator is the number of procd-service boot scripts that run after the
+  bridge itself (the ones that actually fire `service.start`), or a fixed
+  `total`. One-shot setup scripts (fstab, sysctl, done, …) and anything before
+  the bridge are excluded, so the bar reaches ~100% at the real end of boot.
 - On each tick it fills and sends `tick_msg` (with `${value}`, the 0..1 fraction)
   and `status_msg` (with `${service}`, the service name). The `${...}` tokens are
   expanded with the same tree-level substitution `splash-ctl` uses, so
   `"value":"${value}"` becomes a JSON number.
-- When boot is done — signalled by the `done_event` (recommended, see install),
-  the `done_service` starting, or the count reaching `total` — it runs the
-  **finished** sequence: fill the bar to 100%, send the `done_msg` list in order,
-  hold for `hold` seconds, then run `exit_action`.
+- When boot is done — signalled by the count reaching `total` (the primary
+  signal now that the denominator is accurate), the `done_event`, or the
+  `done_service` starting — it runs the **finished** sequence: fill the bar to
+  100%, send the `done_msg` list in order, hold for `hold` seconds, then run
+  `exit_action`.
 - If none of those arrive and there is no `service.start` for `idle_timeout`
   seconds, the idle watchdog runs `idle_action`: a normal **finished** sequence
   (boot just settled) or, with a done signal wired up, the **fail** sequence on a
@@ -52,23 +56,24 @@ install -m0755 ubus-progress/splash-progress.init /etc/init.d/splash-progress
 /etc/init.d/splash-progress enable
 ```
 
-### Wire up a "boot done" signal (recommended)
+### Wire up a "boot done" signal (optional failsafe)
 
-procd has no boot-complete ubus event, so the count never reaches the
-`/etc/rc.d/S*` denominator exactly and there is no clean success signal. Fire
-one yourself at the end of boot — add to `/etc/rc.local`, before its `exit 0`:
+The accurate denominator means the count normally reaches `total` on its own at
+the end of boot, so a done signal is no longer required. It is still a useful
+**failsafe** for the case where the count lands a service or two short (a service
+that fires no instance, or an extra one that fires two): fire an event at the end
+of boot and the bridge finishes the instant it arrives, regardless of the count.
+Add to `/etc/rc.local`, before its `exit 0`:
 
 ```sh
 ubus call service event '{"type":"boot.done","data":{}}'
 ```
 
-The bridge watches for that event (`done_event`, default `boot.done`) and
-finishes the instant it arrives — filling the bar to 100% regardless of where
-the count got to. With this in place the idle watchdog only ever fires on a
-genuine stall, so `idle_action 'fail'` shows the fail screen only when boot
-really hangs. Without it, set `idle_action 'finished'` so the quiet after the
-last service is treated as a (slightly delayed) normal completion rather than a
-failure.
+The bridge watches for it (`done_event`, default `boot.done`). It does not mask
+the fail screen: a real stall leaves the count well below `total` **and** never
+reaches `/etc/rc.local`, so neither the count nor the event fires and the idle
+watchdog runs `idle_action 'fail'`. Set `idle_action 'finished'` instead if you
+prefer the quiet after the last service to count as a normal completion.
 
 ## Where it fits in the boot
 
@@ -76,9 +81,10 @@ failure.
   the initramfs, where it is left **suspended** so the boot frame is held on
   screen. It needs only DRM, not ubus.
 - This **bridge** starts at `START=00` in the main boot phase. It must run after
-  `ubusd` is up (so it cannot live in preinit), and `S00` aligns its counting
-  window with the `/etc/rc.d/S*` denominator. Earlier than that it would also
-  count procd's internal early services, skewing the total.
+  `ubusd` is up (so it cannot live in preinit). Starting early maximises the
+  window it observes; the denominator counts only the procd services that run
+  *after* the bridge's own script, so wherever it starts, the bar still reaches
+  ~100% (just over a smaller set of services if it starts late).
 - On start the bridge **resumes** the suspended splash itself (`resume` option),
   so it comes alive exactly when progress begins. The splash content does not
   change before the bridge takes over, so a separate preinit
@@ -92,7 +98,7 @@ Four sections; see `splash.config` for a ready-to-edit sample.
 ```
 config global 'global'
 	option enabled      '1'
-	option total        'auto'        # 'auto' = count /etc/rc.d/S*, or a number
+	option total        'auto'        # 'auto' = count procd-service S## scripts
 	option done_event   'boot.done'   # ubus "service event" type = boot done
 	option done_service 'done'        # OR a service.start name = boot done
 	option idle_timeout '60'          # run idle_action after Ns of no service.start
@@ -119,23 +125,24 @@ config fail 'fail'                    # boot stalled — a distinct screen
 	option exit_color   '#2a0000'
 ```
 
-Completion is detected, in order of preference, by the `done_event` (a ubus
-service event — see above), the `done_service` (a `service.start` name), or the
-count reaching `total`; any of these runs the **finished** sequence. The idle
-watchdog (no `service.start` for `idle_timeout` seconds) is the fallback: with
-`idle_action 'finished'` it treats the quiet as a settled boot, with
-`idle_action 'fail'` as a stall that runs the **fail** sequence on a distinct
-screen. The finished sequence always fills the bar to 100% first, so it
-completes even if the count never reached the approximate `total`. Either way
-the bridge then exits; the splash daemon dies too only if that section's
-`exit_action` is `exit`/`fade`.
+Completion is detected by the count reaching `total` (the primary signal), the
+`done_event` (a ubus service event — an optional failsafe, see above), or the
+`done_service` (a `service.start` name); any of these runs the **finished**
+sequence. The idle watchdog (no `service.start` for `idle_timeout` seconds) is
+the fallback: with `idle_action 'finished'` it treats the quiet as a settled
+boot, with `idle_action 'fail'` as a stall that runs the **fail** sequence on a
+distinct screen. The finished sequence always fills the bar to 100% first, so it
+completes cleanly even if the count landed a service short. Either way the bridge
+then exits; the splash daemon dies too only if that section's `exit_action` is
+`exit`/`fade`.
 
 | Option | Section | Meaning |
 |--------|---------|---------|
 | `enabled` | global | `0` exits immediately, drawing nothing. |
 | `resume` | global | `1` (default) resumes the splash on start (it is usually started suspended from the initramfs), so no separate preinit resume hook is needed. `0` to leave that to something else. |
-| `total` | global | `auto` counts `/etc/rc.d/S*`; a number overrides it. Approximate — not every S## script starts a service, so tune it or rely on a done signal. |
-| `done_event` | global | ubus `service event` type that means boot is done (fire it from `/etc/rc.local`; see above). The most reliable signal. Empty disables. |
+| `total` | global | `auto` counts the procd-service `/etc/rc.d/S*` scripts that run after the bridge (the ones that fire `service.start`); a number overrides it. Recomputed every boot, so adding/removing services is tracked automatically. |
+| `self_script` | global | The bridge's own `/etc/init.d` name (default `splash-progress`), used to exclude itself and everything before it from the `auto` total. Set only if you renamed the init script. |
+| `done_event` | global | ubus `service event` type that means boot is done — an optional failsafe (fire it from `/etc/rc.local`; see above). Empty disables. |
 | `done_service` | global | A `service.start` name that means boot is done (empty = none). |
 | `idle_timeout` | global | Seconds of no `service.start` after which `idle_action` runs. `0` disables the watchdog. Reset on every tick. |
 | `idle_action` | global | What the idle watchdog does: `finished` (boot settled — the safe default) or `fail` (treat as a stall; only meaningful with a `done_event`/`done_service` so normal boots finish first). |
