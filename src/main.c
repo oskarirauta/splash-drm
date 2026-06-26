@@ -581,6 +581,17 @@ int main(int argc, char **argv) {
 			break;
 		}
 
+		/* Clear fade finished: an exit fade ends by exiting above (exit_at_ms),
+		 * so this is a clear fade — drop the snapshot and reveal the cleared
+		 * scene now showing underneath. */
+		if (st.fade_active && st.exit_at_ms == 0 &&
+		    now_ms() >= st.fade_end_ms) {
+			st.fade_active = 0;
+			free(st.fade_snapshot);
+			st.fade_snapshot = NULL;
+			st.needs_render = 1;
+		}
+
 		/* Advance animations on the monotonic clock. */
 		if (!st.frozen) {
 			st.anim_running = anim_tick(&st, now_ms());

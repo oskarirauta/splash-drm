@@ -128,9 +128,12 @@ static:
 	+$(MAKE) OBJDIR=obj-static CFLAGS='$(CFLAGS) -static' LDFLAGS='$(LDFLAGS) -static' all
 
 # Strip symbols from the built binaries (kept as a separate target so packagers
-# such as OpenWrt, which strip themselves, are never second-guessed).
+# such as OpenWrt, which strip themselves, are never second-guessed). The
+# ubus-progress bridge is not part of `all`, so it is stripped only when it has
+# already been built.
 strip:
 	$(STRIP) $(TARGET) $(CTL_TARGET)
+	[ -x ubus-progress/ubus-progress ] && $(STRIP) ubus-progress/ubus-progress || :
 
 install: all
 	install -d $(SBINDIR) $(BINDIR) $(SHAREDIR)

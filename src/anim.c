@@ -245,6 +245,23 @@ int anim_tick(splash_state_t *st, uint64_t now) {
 		/* An indeterminate bar's sweep moves every frame. */
 		if (pb->active && pb->indeterminate)
 			active = 1;
+
+		/* remove_at_full: once the bar settles at 100% (the smooth tween, if
+		 * any, has finished), keep it on screen for exactly one rendered frame
+		 * and remove it on the next tick. The `active = 1` on each branch forces
+		 * that following frame even when nothing else is animating, so the loop
+		 * does not block on poll() before the removal is drawn. */
+		if (pb->active && pb->remove_at_full && !pb->indeterminate &&
+		    !pb->value_anim.active && pb->value >= 1.0f) {
+			if (pb->full_pending) {
+				memset(pb, 0, sizeof(*pb));   /* full frame shown: drop it */
+			} else {
+				pb->full_pending = 1;         /* draw 100% now, remove next */
+			}
+			active = 1;
+		} else if (pb->active) {
+			pb->full_pending = 0;             /* not at full: reset the latch */
+		}
 	}
 
 	for (int i = 0; i < MAX_IMAGE_OVERLAYS; i++) {

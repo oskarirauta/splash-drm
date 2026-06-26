@@ -30,12 +30,12 @@
 
 #include "cJSON/cJSON.h"
 #include "log.h"
+#include "version.h"		/* SPLASH_VERSION (shared with ubus-progress) */
 
 /* ========================================================================
  * Build Configuration
  * ======================================================================== */
 
-#define SPLASH_VERSION      "5.0.1"
 #define MAX_TEXT_ELEMENTS   32
 #define MAX_IMAGE_OVERLAYS  16
 #define MAX_PROGRESS_BARS   8
@@ -446,6 +446,8 @@ typedef struct {
 	float    value;
 	uint32_t value_smooth_ms; /* >0: animate value changes over this many ms */
 	anim_t   value_anim;      /* tween driving `value` toward a new target */
+	int      remove_at_full;  /* delete the bar once it reaches 100% (default 0) */
+	int      full_pending;    /* latch: 100% drawn once, remove on the next tick */
 
 	/* Custom colours (used when style == -1) */
 	uint32_t bg_color;        /* background (empty) colour */
@@ -623,11 +625,14 @@ typedef struct {
 	uint32_t watchdog_ms;        /* idle timeout, 0 = disabled */
 	uint64_t exit_at_ms;         /* scheduled exit time, 0 = no exit pending */
 
-	/* Fade-out on exit: a full-screen overlay ramps from transparent to
-	 * fade_color between fade_start_ms and exit_at_ms, then the daemon exits.
-	 * Renders even while frozen so a suspended splash still fades. */
+	/* Timed fade: a snapshot of the scene ramps toward fade_color between
+	 * fade_start_ms and fade_end_ms. Renders even while frozen so a suspended
+	 * splash still fades. Two users: an exit fade (fade_end_ms == exit_at_ms,
+	 * the daemon quits at the end) and a clear fade (exit_at_ms == 0; the
+	 * elements were already dropped, so the fade just lifts to reveal them). */
 	int      fade_active;
 	uint64_t fade_start_ms;
+	uint64_t fade_end_ms;        /* when the fade reaches fade_color */
 	uint32_t fade_color;
 	uint8_t *fade_snapshot;      /* cached copy of the scene, for a cheap fade */
 } splash_state_t;
@@ -655,6 +660,7 @@ void     anim_value_start(anim_t *a, float *target,
 
 /* render.c */
 void render_frame(splash_state_t *st);
+int  fade_capture_front(splash_state_t *st);
 void draw_filled_rect(drm_buffer_t *buf, int x, int y, int w, int h,
                       uint32_t color);
 void draw_round_rect(drm_buffer_t *buf, float x, float y, float w, float h,

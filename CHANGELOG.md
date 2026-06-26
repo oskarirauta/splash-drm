@@ -3,10 +3,75 @@
 All notable changes to splash-drm are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [5.0.2] - 2026-06-26
+
+### Added
+
+- **`remove_at_full` on the progress element (cmd.c, anim.c, splash.h)** — a new
+  per-bar boolean (default `false`): when set, the daemon deletes the bar once it
+  reaches 100%. The full bar is shown for one frame before removal, and with
+  `smooth` it waits for the fill tween to finish first. Default keeps the bar on
+  screen at 100% — the disappearing is now opt-in rather than something a config
+  has to undo. Documented in `REFERENCE.md` and `--help progress`.
+- **ubus-progress gains `--version` / `--help` (ubus-progress.c)** — the bridge
+  now answers `--version` (it tracks the daemon's version) and `--help`, which
+  documents the template macros and the array form. With no argument it behaves
+  exactly as before (load UCI, run the bridge).
+- **More template macros for ubus-progress (ubus-progress.c)** — alongside
+  `${value}` (0..1) and `${service}`, every per-tick template can now use
+  `${percent}` (0..100 integer), `${count}` and `${total}`. `${percent}` lets a
+  thin progress bar carry a separate `"${percent}%"` text readout placed
+  anywhere in the scene, and makes "did it reach 100%?" visible at a glance.
+- **ubus-progress `finished` gains a `delay` option (ubus-progress.c)** — seconds
+  to hold the filled 100% frame before the `done_msg` sequence runs (default `0`
+  = immediate). Mainly a debug aid to confirm the bar really reached the end.
+- **ubus-progress `[start]` section (ubus-progress.c)** — a `list start_msg` run
+  once when the bridge comes up (after it resumes the splash), before the first
+  tick. It can create or replace any element — drop an initramfs "Preparing…"
+  text, build the progress bar, restyle the whole scene — so the layout can live
+  in UCI instead of the initramfs (no initramfs rebuild for layout tweaks).
+- **`fade` on the `clear` system action (cmd.c, render.c, main.c, splash.h)** —
+  `{"system":{"action":"clear","fade":true,"timeout":N}}` cross-fades into the
+  cleared scene instead of cutting to it: the old frame is snapshotted and the
+  elements dropped immediately (so anything sent next is built on the fresh
+  scene), then the snapshot fades out over `timeout` seconds (`fade":true` to the
+  clear colour, `"#rrggbb"` to that colour) and lifts to reveal what is
+  underneath. Reuses the exit-fade renderer (the fade window is now a generic
+  `fade_end_ms` shared by the exit and clear fades). Documented in `REFERENCE.md`
+  and `--help clear`.
+
+### Changed
+
+- **ubus-progress per-tick config consolidated to a single `list status_msg`
+  (ubus-progress.c)** — the former separate `tick_msg` and `status_msg` options
+  are replaced by one `list status_msg`, every entry of which is sent on each
+  tick. This matches the `list done_msg` / `list fail_msg` shape of the other
+  sections and is strictly more capable (the macros were already global and a
+  template may be an array), so the split bought nothing. **Config change:**
+  rename `option tick_msg`/`option status_msg` to `list status_msg` entries; a
+  single `option status_msg` still works.
+- **Version string moved to `include/version.h`** — a tiny dependency-free
+  header is now the single source of truth for `SPLASH_VERSION`. `splash.h`
+  includes it for the daemon and control client, and `ubus-progress` includes it
+  directly so it reports the same version without pulling in the DRM headers.
+- **ubus-progress docs refreshed (README.md, splash.config)** — document the
+  `list status_msg` consolidation, the `delay` option, the new macros, the array
+  form, and that the bar now stays at 100% by default (the sample no longer
+  removes it in the finished sequence).
 
 ### Fixed
 
+- **ubus-progress no longer fails a normal boot whose `total` over-counts
+  (ubus-progress.c)** — the auto `total` tends to be a service or two high (init
+  scripts that look like procd services but never fire an observed
+  `service.start`), so the count plateaued just short of `total`, the exact
+  `count == total` finish never fired, and the idle watchdog ran `idle_action`
+  ("fail") on an otherwise-complete boot. Now, once progress reaches
+  `done_at_pct` (default 90%), a quiet of `settle_timeout` (default 5 s) is
+  treated as *boot settled* and runs the **finished** sequence — closing the gap
+  with no `done_event`/rc.local hook. The full `idle_timeout` + `idle_action`
+  path now applies only to a genuine low-progress stall. Two new `[global]`
+  options, `done_at_pct` and `settle_timeout`, tune the threshold and window.
 - **`--help <cmd>` text caught up with schema v1 (usage.c)** — the per-command
   parameter lists had drifted behind the code. The `progress` and `arc` help now
   document `smooth` (animated value changes); `progress` also lists the `border`

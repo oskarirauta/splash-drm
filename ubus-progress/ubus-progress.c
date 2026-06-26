@@ -19,16 +19,25 @@
  *       option total        'auto'   # 'auto' = count procd-service S## scripts
  *       option done_event   'boot.done'  # optional failsafe: service event type
  *       option done_service 'done'   # service.start name that means "boot done"
- *       option idle_timeout '60'     # run idle_action if idle for Ns (0 = off)
+ *       option idle_timeout '60'     # stall window (s) while progress is low
  *       option idle_action  'finished'   # finished (settled) | fail (stalled)
+ *       option done_at_pct  '90'     # >= this % + quiet = boot done, not a stall
+ *       option settle_timeout '5'    # quiet window (s) once near-complete
  *
- *   config progress 'progress'       # per-tick (${value}=0..1, ${service}=name)
- *       option tick_msg     '{"progress":{"id":0,"value":"${value}"}}'
- *       option status_msg   '{"console":{"id":0,"write":"starting ${service}"}}'
+ *   config start 'start'             # run once when the bridge comes up:
+ *       list   start_msg    '{"text":{"id":1,"remove":true}}'   # drop "Preparing…"
+ *       list   start_msg    '{"progress":{"id":0,"y":"80%","value":"0"}}'
+ *
+ *   config progress 'progress'       # per-tick templates, all sent every tick.
+ *       # Macros: ${value} (0..1), ${percent} (0..100 int), ${count}/${total}
+ *       # (N of M), ${service} (name). Each entry may be one object or a JSON
+ *       # array of them (one batch).
+ *       list   status_msg   '{"progress":{"id":0,"value":"${value}"}}'
+ *       list   status_msg   '{"console":{"id":0,"write":"starting ${service}"}}'
  *
  *   config finished 'finished'       # boot completed normally
- *       list   done_msg     '{"progress":{"id":0,"remove":true}}'
  *       list   done_msg     '{"text":{"id":99,"text":"System ready!"}}'
+ *       option delay        '0'      # hold the 100% frame before done_msg (debug)
  *       option hold         '2'      # pause (s) after done_msg, before exit
  *       option exit_action  'fade'   # none | exit | fade
  *       option exit_timeout '1'
@@ -60,6 +69,7 @@
 #include <uci.h>
 
 #include "cJSON/cJSON.h"
+#include "version.h"		/* SPLASH_VERSION — the bridge tracks the daemon's */
 
 /* subst.c (reused from the splash-drm build): ${NAME} expansion engine. */
 extern int  subst_define(const char *spec);   /* "NAME=value" */
@@ -75,15 +85,21 @@ static struct {
 	int    total;
 	int    idle_timeout;   /* run idle_action if no service.start for this long */
 	char  *idle_action;    /* "finished" (boot settled) | "fail" (stalled) */
+	int    done_at_pct;    /* progress % that counts as "boot reached the end" */
+	int    settle_timeout; /* quiet seconds, once near-complete, to call it done */
 	char  *done_service;   /* service.start name that means "boot done" */
 	char  *done_event;     /* ubus "service event" type that means "boot done" */
 	char  *self_script;    /* our own /etc/init.d name, excluded from the total */
-	/* [progress] */
-	char  *tick_msg;
-	char  *status_msg;
+	/* [start] — one-time sequence run when the bridge comes up */
+	char **start_msg;
+	int    start_msg_n;
+	/* [progress] — one `list status_msg` of templates, all sent every tick */
+	char **status_msg;
+	int    status_msg_n;
 	/* [finished] — boot completed normally */
 	char **done_msg;
 	int    done_msg_n;
+	int    fin_delay;      /* seconds to hold the 100% frame before the done seq */
 	int    hold;           /* seconds to hold the finished frame before exit */
 	char  *fin_action;     /* none | exit | fade */
 	int    fin_timeout;
@@ -103,6 +119,7 @@ static char                  *g_exit_json = NULL;   /* sent after the hold */
 static struct ubus_subscriber g_sub;
 static struct uloop_timeout   g_hold_timer;
 static struct uloop_timeout   g_idle_timer;
+static struct uloop_timeout   g_finish_timer;   /* delays the done sequence */
 
 /* ---- splash-drm control socket ---- */
 
@@ -156,6 +173,23 @@ static void send_template(const char *tmpl)
 	}
 }
 
+/* Define the progress macros for a tick: ${value} (0..1 fraction), ${percent}
+ * (0..100 integer), ${count} (services advanced so far) and ${total} (the
+ * denominator). Templates pick whichever they need. Integer percent avoids a
+ * libm dependency. */
+static void define_progress(double value, int count, int total)
+{
+	char buf[48];
+	snprintf(buf, sizeof(buf), "value=%.4f", value);
+	subst_define(buf);
+	snprintf(buf, sizeof(buf), "percent=%d", (int)(value * 100.0 + 0.5));
+	subst_define(buf);
+	snprintf(buf, sizeof(buf), "count=%d", count);
+	subst_define(buf);
+	snprintf(buf, sizeof(buf), "total=%d", total);
+	subst_define(buf);
+}
+
 /* ---- finish / fail (shared sequence) ---- */
 
 /* Build the exit message for an action, or NULL for "none". */
@@ -183,16 +217,20 @@ static void do_exit(struct uloop_timeout *t)
 	uloop_end();
 }
 
+/* Send every per-tick template (the `list status_msg`) with the current macros.
+ * Used on each tick and to fill the bar to 100% at finish. */
+static void send_status_list(void)
+{
+	for (int i = 0; i < cfg.status_msg_n; i++)
+		send_template(cfg.status_msg[i]);
+}
+
 /* Send a message list in order, then schedule the exit after `hold` seconds.
- * Shared by the finished (success) and fail (stall) outcomes. Fires once. */
+ * The g_done re-entry guard lives in the finish()/fail() callers, so this runs
+ * exactly once per outcome even when finish() defers it past a delay. */
 static void run_sequence(char **msgs, int n, int hold,
                          const char *action, int timeout, const char *color)
 {
-	if (g_done)
-		return;
-	g_done = 1;
-	uloop_timeout_cancel(&g_idle_timer);
-
 	for (int i = 0; i < n; i++)
 		send_template(msgs[i]);
 
@@ -201,20 +239,44 @@ static void run_sequence(char **msgs, int n, int hold,
 	uloop_timeout_set(&g_hold_timer, hold > 0 ? hold * 1000 : 0);
 }
 
-static void finish(void)
+/* The finished (success) done sequence, possibly deferred by `fin_delay`. */
+static void run_finished(struct uloop_timeout *t)
 {
-	if (g_done)
-		return;
-	/* Fill the bar to 100% first, so it always completes even when the count
-	 * never reached the (approximate) total, then run the done sequence. */
-	subst_define("value=1.0");
-	send_template(cfg.tick_msg);
+	(void)t;
 	run_sequence(cfg.done_msg, cfg.done_msg_n, cfg.hold,
 	             cfg.fin_action, cfg.fin_timeout, cfg.fin_color);
 }
 
+static void finish(void)
+{
+	if (g_done)
+		return;
+	g_done = 1;                          /* claim completion now: blocks fail() */
+	uloop_timeout_cancel(&g_idle_timer);
+
+	/* Fill the bar to 100% first, so it always completes even when the count
+	 * never reached the (approximate) total. The macros read 100% / count==total
+	 * so a ${percent} readout lands on "100". */
+	define_progress(1.0, cfg.total, cfg.total);
+	send_status_list();
+
+	/* fin_delay holds the filled 100% frame before the done sequence runs —
+	 * mainly a debug aid to confirm the bar really reached the end. */
+	if (cfg.fin_delay > 0) {
+		g_finish_timer.cb = run_finished;
+		uloop_timeout_set(&g_finish_timer, cfg.fin_delay * 1000);
+	} else {
+		run_finished(NULL);
+	}
+}
+
 static void fail(void)
 {
+	if (g_done)
+		return;
+	g_done = 1;
+	uloop_timeout_cancel(&g_idle_timer);
+
 	char b[48];
 	snprintf(b, sizeof(b), "idle=%d", cfg.idle_timeout);
 	subst_define(b);
@@ -222,16 +284,42 @@ static void fail(void)
 	             cfg.fail_action, cfg.fail_timeout, cfg.fail_color);
 }
 
-/* Idle watchdog: no service.start within idle_timeout. With a done event wired
- * up, this only fires on a genuine stall (idle_action "fail"); without one, the
- * quiet simply means boot settled (idle_action "finished", the safe default). */
+/* Have we advanced far enough that a quiet period means "boot reached the end"
+ * rather than "boot stalled"? The auto total tends to over-count by a service or
+ * two (init scripts that look like procd services but never fire an observed
+ * service.start), so the count often plateaus just short of total and the exact
+ * count==total finish never fires. Treating >= done_at_pct as effectively done
+ * closes that gap without a done_event/rc.local hook. */
+static int near_complete(void)
+{
+	return cfg.total > 0 &&
+	       (long)g_count * 100 >= (long)cfg.total * cfg.done_at_pct;
+}
+
+/* (Re)arm the idle/settle watchdog. Near the end we use the short settle_timeout
+ * so a normal boot finishes promptly once it goes quiet; earlier on we wait the
+ * full idle_timeout, so a genuine early stall still gets the patient treatment. */
+static void arm_idle(void)
+{
+	int secs = near_complete() ? cfg.settle_timeout : cfg.idle_timeout;
+	if (secs > 0)
+		uloop_timeout_set(&g_idle_timer, secs * 1000);
+	else
+		uloop_timeout_cancel(&g_idle_timer);
+}
+
+/* Idle/settle watchdog fired: no service.start within the window. If we are
+ * essentially at the end, the quiet means boot settled — finish, regardless of
+ * idle_action, since the (approximate) count never reached total exactly. Only a
+ * quiet period while progress is still low is treated as a real stall. */
 static void on_idle(struct uloop_timeout *t)
 {
 	(void)t;
-	if (cfg.idle_action && strcmp(cfg.idle_action, "fail") == 0)
-		fail();
-	else
+	if (near_complete() ||
+	    !(cfg.idle_action && strcmp(cfg.idle_action, "fail") == 0))
 		finish();
+	else
+		fail();
 }
 
 /* ---- procd service notifications ---- */
@@ -284,10 +372,6 @@ static int notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	    strcmp(name, cfg.self_script) == 0)
 		return 0;
 
-	/* Real activity: keep the idle watchdog from firing. */
-	if (cfg.idle_timeout > 0)
-		uloop_timeout_set(&g_idle_timer, cfg.idle_timeout * 1000);
-
 	/* The boot-complete service is the explicit "done" signal. */
 	if (cfg.done_service && *cfg.done_service &&
 	    strcmp(name, cfg.done_service) == 0) {
@@ -298,20 +382,21 @@ static int notify_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	if (g_count < cfg.total)
 		g_count++;
 
+	/* Real activity: re-arm the watchdog. Done after the count bump so the
+	 * window shortens to settle_timeout as soon as we cross into near-complete. */
+	arm_idle();
+
 	double value = cfg.total > 0 ? (double)g_count / (double)cfg.total : 1.0;
 	if (value > 1.0)
 		value = 1.0;
 
-	char vbuf[48];
-	snprintf(vbuf, sizeof(vbuf), "value=%.4f", value);
-	subst_define(vbuf);
+	define_progress(value, g_count, cfg.total);
 
 	char sbuf[160];
 	snprintf(sbuf, sizeof(sbuf), "service=%s", name);
 	subst_define(sbuf);
 
-	send_template(cfg.tick_msg);
-	send_template(cfg.status_msg);
+	send_status_list();
 
 	/* Fallback if the done service never fires. */
 	if (g_count >= cfg.total)
@@ -449,9 +534,12 @@ static void load_config(void)
 	cfg.total        = 0;
 	cfg.idle_timeout = 60;
 	cfg.idle_action  = strdup("finished");
+	cfg.done_at_pct  = 90;
+	cfg.settle_timeout = 5;
 	cfg.done_service = strdup("done");
 	cfg.done_event   = strdup("boot.done");
 	cfg.self_script  = strdup("splash-progress");
+	cfg.fin_delay    = 0;
 	cfg.hold         = 2;
 	cfg.fin_action   = strdup("none");
 	cfg.fin_timeout  = 1;
@@ -482,6 +570,12 @@ static void load_config(void)
 		if ((s = uci_str(uci, "splash.global.idle_action"))) {
 			free(cfg.idle_action); cfg.idle_action = s;
 		}
+		if ((s = uci_str(uci, "splash.global.done_at_pct"))) {
+			cfg.done_at_pct = atoi(s); free(s);
+		}
+		if ((s = uci_str(uci, "splash.global.settle_timeout"))) {
+			cfg.settle_timeout = atoi(s); free(s);
+		}
 		if ((s = uci_str(uci, "splash.global.done_service"))) {
 			free(cfg.done_service); cfg.done_service = s;
 		}
@@ -492,13 +586,21 @@ static void load_config(void)
 			free(cfg.self_script); cfg.self_script = s;
 		}
 
-		/* [progress] */
-		cfg.tick_msg   = uci_str(uci, "splash.progress.tick_msg");
-		cfg.status_msg = uci_str(uci, "splash.progress.status_msg");
+		/* [start] — one-time setup sequence (accepts a list or single option). */
+		cfg.start_msg_n = uci_list(uci, "splash.start.start_msg",
+		                           &cfg.start_msg);
+
+		/* [progress] — one list of per-tick templates (accepts a single
+		 * `option status_msg` too: uci_list reads either form). */
+		cfg.status_msg_n = uci_list(uci, "splash.progress.status_msg",
+		                            &cfg.status_msg);
 
 		/* [finished] */
 		cfg.done_msg_n = uci_list(uci, "splash.finished.done_msg",
 		                          &cfg.done_msg);
+		if ((s = uci_str(uci, "splash.finished.delay"))) {
+			cfg.fin_delay = atoi(s); free(s);
+		}
 		if ((s = uci_str(uci, "splash.finished.hold"))) {
 			cfg.hold = atoi(s); free(s);
 		}
@@ -535,8 +637,54 @@ static void load_config(void)
 		cfg.total = count_boot_scripts(cfg.self_script);
 }
 
-int main(void)
+static void usage(FILE *out, const char *prog)
 {
+	fprintf(out,
+"Usage: %s [OPTION]\n"
+"\n"
+"OpenWrt procd -> splash-drm boot-progress bridge. Subscribes to procd's\n"
+"'service' ubus object and drives the splash from real service.start events,\n"
+"filling UCI-configured JSON templates and sending them to the splash-drm\n"
+"control socket. Normally launched as the 'splash-progress' procd service, not\n"
+"run by hand; with no option it loads /etc/config/splash and runs the bridge.\n"
+"\n"
+"Options:\n"
+"  -v, --version   print the version (tracks splash-drm) and exit\n"
+"  -h, --help      print this help and exit\n"
+"\n"
+"Configuration lives in UCI at /etc/config/splash (see the bundled sample and\n"
+"ubus-progress/README.md). The per-tick templates expand these macros:\n"
+"  ${value}    progress as a 0..1 fraction        (e.g. \"value\":\"${value}\")\n"
+"  ${percent}  progress as a 0..100 integer        (e.g. a \"${percent}%%\" text)\n"
+"  ${count}    services advanced so far (N)\n"
+"  ${total}    the denominator (M), so \"${count}/${total}\"\n"
+"  ${service}  the name of the service that just started\n"
+"  ${idle}     stall time in seconds (fail templates only)\n"
+"\n"
+"A template may be a single command object or a JSON array of them, e.g.\n"
+"  '[{\"progress\":{\"id\":0,\"value\":\"${value}\"}},"
+"{\"text\":{\"id\":1,\"text\":\"${percent}%%\"}}]'\n"
+"which the daemon runs as one batch.\n",
+		prog);
+}
+
+int main(int argc, char **argv)
+{
+	const char *prog = argv[0] ? argv[0] : "ubus-progress";
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
+			printf("%s\n", SPLASH_VERSION);
+			return 0;
+		}
+		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+			usage(stdout, prog);
+			return 0;
+		}
+		fprintf(stderr, "%s: unknown option '%s'\n", prog, argv[i]);
+		usage(stderr, prog);
+		return 2;
+	}
+
 	load_config();
 	if (!cfg.enabled) {
 		fprintf(stderr, "ubus-progress: disabled in UCI, exiting\n");
@@ -572,10 +720,19 @@ int main(void)
 	if (cfg.resume)
 		splash_send("{\"system\":\"resume\"}");
 
+	/* One-time start sequence, run once the splash is alive. It can create or
+	 * replace any element — e.g. drop an initramfs "Preparing…" text and build
+	 * the progress bar — so the whole scene can live in UCI instead of the
+	 * initramfs. Macros read 0% / count 0 of total. */
+	if (cfg.start_msg_n > 0) {
+		define_progress(0.0, 0, cfg.total);
+		for (int i = 0; i < cfg.start_msg_n; i++)
+			send_template(cfg.start_msg[i]);
+	}
+
 	/* Arm the idle watchdog: if no service.start ever arrives, boot stalled. */
 	g_idle_timer.cb = on_idle;
-	if (cfg.idle_timeout > 0)
-		uloop_timeout_set(&g_idle_timer, cfg.idle_timeout * 1000);
+	arm_idle();
 
 	uloop_run();
 

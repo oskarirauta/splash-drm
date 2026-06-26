@@ -1378,6 +1378,25 @@ void draw_arc_bar(drm_buffer_t *buf, arc_bar_t *ab, uint64_t now) {
  * Frame Rendering
  * ======================================================================== */
 
+/* Capture the currently displayed (front) buffer into fade_snapshot, so a clear
+ * can fade the old frame out over the freshly cleared scene underneath. Mirrors
+ * the exit-fade snapshot but is taken in the command path, before the elements
+ * are dropped. Returns 0 on success, -1 if out of memory. */
+int fade_capture_front(splash_state_t *st) {
+	drm_buffer_t *buf = &st->drm.buf[st->drm.front_buf];
+	if (!buf->map || !buf->width || !buf->height)
+		return -1;
+	free(st->fade_snapshot);
+	st->fade_snapshot = malloc((size_t)buf->width * buf->height * 4);
+	if (!st->fade_snapshot)
+		return -1;
+	for (uint32_t y = 0; y < buf->height; y++)
+		memcpy(st->fade_snapshot + (size_t)y * (size_t)buf->width * 4,
+		       buf->map + (size_t)y * buf->pitch,
+		       (size_t)buf->width * 4);
+	return 0;
+}
+
 /* Compose one complete frame into the back buffer, then present it. */
 void render_frame(splash_state_t *st) {
 	drm_buffer_t *buf = &st->drm.buf[st->drm.front_buf ^ 1];
@@ -1389,9 +1408,9 @@ void render_frame(splash_state_t *st) {
 	 * are ~10x slower than cached reads), so the fade stays smooth at full
 	 * resolution. The frozen snapshot also hides any late element redraws. */
 	if (st->fade_active && st->fade_snapshot &&
-	    st->exit_at_ms > st->fade_start_ms) {
+	    st->fade_end_ms > st->fade_start_ms) {
 		float p = (float)(now - st->fade_start_ms) /
-		          (float)(st->exit_at_ms - st->fade_start_ms);
+		          (float)(st->fade_end_ms - st->fade_start_ms);
 		if (p < 0.0f) p = 0.0f;
 		if (p > 1.0f) p = 1.0f;
 		uint32_t target = st->fade_color | 0xFF000000u;
@@ -1570,7 +1589,7 @@ void render_frame(splash_state_t *st) {
 	 * buffer so every later frame can fade it cheaply (the fast path at the
 	 * top). The one slow read of the WC framebuffer here is a one-off. */
 	if (st->fade_active && !st->fade_snapshot &&
-	    st->exit_at_ms > st->fade_start_ms) {
+	    st->fade_end_ms > st->fade_start_ms) {
 		st->fade_snapshot = malloc((size_t)buf->width * buf->height * 4);
 		if (st->fade_snapshot) {
 			for (uint32_t y = 0; y < buf->height; y++)
@@ -1580,7 +1599,7 @@ void render_frame(splash_state_t *st) {
 		} else {
 			/* Out of memory: fall back to the (slower) blended overlay. */
 			float p = (float)(now - st->fade_start_ms) /
-			          (float)(st->exit_at_ms - st->fade_start_ms);
+			          (float)(st->fade_end_ms - st->fade_start_ms);
 			if (p > 1.0f) p = 1.0f;
 			uint32_t a = (uint32_t)(p * 255.0f + 0.5f);
 			blend_fullscreen(buf, (st->fade_color & 0x00FFFFFFu) | (a << 24));

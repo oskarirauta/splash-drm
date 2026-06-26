@@ -18,19 +18,30 @@ you want a small always-on daemon driven by real procd service events.
   bridge itself (the ones that actually fire `service.start`), or a fixed
   `total`. One-shot setup scripts (fstab, sysctl, done, …) and anything before
   the bridge are excluded, so the bar reaches ~100% at the real end of boot.
-- On each tick it fills and sends `tick_msg` (with `${value}`, the 0..1 fraction)
-  and `status_msg` (with `${service}`, the service name). The `${...}` tokens are
-  expanded with the same tree-level substitution `splash-ctl` uses, so
-  `"value":"${value}"` becomes a JSON number.
-- When boot is done — signalled by the count reaching `total` (the primary
-  signal now that the denominator is accurate), the `done_event`, or the
-  `done_service` starting — it runs the **finished** sequence: fill the bar to
-  100%, send the `done_msg` list in order, hold for `hold` seconds, then run
-  `exit_action`.
-- If none of those arrive and there is no `service.start` for `idle_timeout`
-  seconds, the idle watchdog runs `idle_action`: a normal **finished** sequence
-  (boot just settled) or, with a done signal wired up, the **fail** sequence on a
-  distinct screen. Either way the bridge then exits.
+- On each tick it sends every `status_msg` template (a UCI `list`, so add as many
+  as you like — the bar, a `${percent}%` readout, a console line, …). They share
+  one global macro set: `${value}` (0..1 fraction), `${percent}` (0..100
+  integer), `${count}` / `${total}` (the N-of-M position) and `${service}` (the
+  name that just started). The `${...}` tokens are expanded with the same
+  tree-level substitution `splash-ctl` uses, so `"value":"${value}"` becomes a
+  JSON number while `"${percent}%"` stays a string. Each list entry may itself be
+  a single command object **or a JSON array of them**, which the daemon runs as
+  one batch.
+- When boot is done — signalled by the count reaching `total`, the `done_event`,
+  the `done_service` starting, or progress going quiet near the end (see next
+  point) — it runs the **finished** sequence: fill the bar to 100%, optionally
+  hold that frame for `delay` seconds, send the `done_msg` list in order, hold
+  for `hold` seconds, then run `exit_action`.
+- The auto `total` tends to over-count by a service or two (init scripts that
+  look like procd services but never fire an observed `service.start`), so the
+  count usually plateaus just short of `total` and the exact 100% finish never
+  fires on its own. To close that gap **without** a `done_event`/rc.local hook,
+  once progress reaches `done_at_pct` (default 90%) a quiet of `settle_timeout`
+  (default 5 s) counts as *boot settled* and runs the **finished** sequence. A
+  quiet period while progress is still **below** `done_at_pct` is the real
+  **stall** case: there the bridge waits the full `idle_timeout` and then runs
+  `idle_action` (`fail` for a distinct stall screen, or `finished`). Either way
+  the bridge then exits.
 - It connects straight to the splash-drm control socket (no `splash-ctl` fork per
   tick) and is silent if the daemon is not reachable.
 
@@ -56,24 +67,25 @@ install -m0755 ubus-progress/splash-progress.init /etc/init.d/splash-progress
 /etc/init.d/splash-progress enable
 ```
 
-### Wire up a "boot done" signal (optional failsafe)
+### Wire up a "boot done" signal (optional)
 
-The accurate denominator means the count normally reaches `total` on its own at
-the end of boot, so a done signal is no longer required. It is still a useful
-**failsafe** for the case where the count lands a service or two short (a service
-that fires no instance, or an extra one that fires two): fire an event at the end
-of boot and the bridge finishes the instant it arrives, regardless of the count.
-Add to `/etc/rc.local`, before its `exit 0`:
+You normally **do not** need this: the `done_at_pct` / `settle_timeout` heuristic
+already finishes a normal boot on its own once progress goes quiet near the end,
+without any hook. procd has no native boot-complete event over the `service`
+object, and `/etc/rc.local` is a plain script (not a procd service), so there is
+nothing for the bridge to subscribe to for "boot done" — which is why this hook
+fires the signal explicitly.
+
+Use it only if you want completion the **instant** boot ends rather than after
+`settle_timeout`, or your `total` over-counts so badly that progress never
+reaches `done_at_pct`. Add to `/etc/rc.local`, before its `exit 0`:
 
 ```sh
 ubus call service event '{"type":"boot.done","data":{}}'
 ```
 
-The bridge watches for it (`done_event`, default `boot.done`). It does not mask
-the fail screen: a real stall leaves the count well below `total` **and** never
-reaches `/etc/rc.local`, so neither the count nor the event fires and the idle
-watchdog runs `idle_action 'fail'`. Set `idle_action 'finished'` instead if you
-prefer the quiet after the last service to count as a normal completion.
+The bridge watches for it (`done_event`, default `boot.done`) and finishes the
+instant it arrives, regardless of the count.
 
 ## Where it fits in the boot
 
@@ -93,7 +105,7 @@ prefer the quiet after the last service to count as a normal completion.
 
 ## Configuration (`/etc/config/splash`)
 
-Four sections; see `splash.config` for a ready-to-edit sample.
+Up to five sections; see `splash.config` for a ready-to-edit sample.
 
 ```
 config global 'global'
@@ -101,16 +113,22 @@ config global 'global'
 	option total        'auto'        # 'auto' = count procd-service S## scripts
 	option done_event   'boot.done'   # ubus "service event" type = boot done
 	option done_service 'done'        # OR a service.start name = boot done
-	option idle_timeout '60'          # run idle_action after Ns of no service.start
+	option idle_timeout '60'          # stall window (s) while progress is low
 	option idle_action  'fail'        # finished (settled) | fail (stalled)
+	option done_at_pct  '90'          # >= this % + quiet = boot done, not a stall
+	option settle_timeout '5'         # quiet window (s) once near-complete
 
-config progress 'progress'
-	option tick_msg     '{"progress":{"id":0,"value":"${value}"}}'
-	option status_msg   '{"console":{"id":0,"write":"starting ${service}"}}'
+config start 'start'                 # run once when the bridge comes up
+	list   start_msg    '{"text":{"id":1,"remove":true}}'    # drop "Preparing…"
+	list   start_msg    '{"progress":{"id":0,"y":"80%","value":"0"}}'
+
+config progress 'progress'           # per-tick templates (a list, all sent)
+	list   status_msg   '{"progress":{"id":0,"value":"${value}"}}'
+	list   status_msg   '{"console":{"id":0,"write":"starting ${service}"}}'
 
 config finished 'finished'            # boot completed normally
-	list   done_msg     '{"progress":{"id":0,"remove":true}}'
 	list   done_msg     '{"text":{"id":99,"text":"System ready!"}}'
+	option delay        '0'           # hold the 100% frame before done_msg (debug)
 	option hold         '2'           # seconds to show the ready frame
 	option exit_action  'fade'        # none | exit | fade
 	option exit_timeout '1'           # fade/exit duration in seconds
@@ -138,23 +156,53 @@ then exits; the splash daemon dies too only if that section's `exit_action` is
 
 | Option | Section | Meaning |
 |--------|---------|---------|
+| `start_msg` | start | A `list` of templates sent once when the bridge comes up (after it resumes the splash), before the first tick. Create or replace any element here — drop an initramfs "Preparing…" text, build the progress bar, restyle the scene — so the whole layout can live in UCI instead of the initramfs. Omit the section to leave the initramfs scene unchanged. |
 | `enabled` | global | `0` exits immediately, drawing nothing. |
 | `resume` | global | `1` (default) resumes the splash on start (it is usually started suspended from the initramfs), so no separate preinit resume hook is needed. `0` to leave that to something else. |
 | `total` | global | `auto` counts the procd-service `/etc/rc.d/S*` scripts that run after the bridge (the ones that fire `service.start`); a number overrides it. Recomputed every boot, so adding/removing services is tracked automatically. |
 | `self_script` | global | The bridge's own `/etc/init.d` name (default `splash-progress`), used to exclude itself and everything before it from the `auto` total. Set only if you renamed the init script. |
 | `done_event` | global | ubus `service event` type that means boot is done — an optional failsafe (fire it from `/etc/rc.local`; see above). Empty disables. |
 | `done_service` | global | A `service.start` name that means boot is done (empty = none). |
-| `idle_timeout` | global | Seconds of no `service.start` after which `idle_action` runs. `0` disables the watchdog. Reset on every tick. |
-| `idle_action` | global | What the idle watchdog does: `finished` (boot settled — the safe default) or `fail` (treat as a stall; only meaningful with a `done_event`/`done_service` so normal boots finish first). |
-| `tick_msg` | progress | Message sent each tick; `${value}` is the 0..1 fraction. Empty = skip. |
-| `status_msg` | progress | Message sent each tick; `${service}` is the service name. Empty = skip. |
-| `done_msg` | finished | A `list` of messages sent in order on success (remove the bar/console, show a ready message, …). |
+| `idle_timeout` | global | Seconds of no `service.start`, **while progress is still below `done_at_pct`**, after which `idle_action` runs. `0` disables the watchdog. Reset on every tick. |
+| `idle_action` | global | What the watchdog does on a low-progress stall: `finished` (boot settled — the safe default) or `fail` (a distinct stall screen). Does not apply once near-complete (see `done_at_pct`), where a quiet always finishes. |
+| `done_at_pct` | global | Progress percentage (default `90`) at/above which a quiet period counts as *boot done* rather than a stall — closing the gap left by an over-counted `total`, with no `done_event`/rc.local hook. Once reached, the watchdog window shortens to `settle_timeout`. Set higher to be stricter, lower if your `total` over-counts by more. |
+| `settle_timeout` | global | Seconds of quiet, once progress is at/above `done_at_pct`, after which the **finished** sequence runs (default `5`). Lower = snappier completion, but risks finishing during a long gap between two late services. |
+| `status_msg` | progress | A `list` of templates, all sent on every tick (the bar, a `${percent}%` readout, a console line, …). Each entry is one command object or a JSON array. Empty = skip. A single `option status_msg` also works. |
+| `done_msg` | finished | A `list` of messages sent in order on success (show a ready message, optionally remove the bar/console, …). |
 | `fail_msg` | fail | A `list` of messages sent in order on a stall; `${idle}` is the stall time in seconds. |
+| `delay` | finished | Seconds to hold the filled 100% frame before the `done_msg` sequence runs. `0` (default) runs it immediately. Mainly a debug aid to confirm the bar reached the end. |
 | `hold` | finished / fail | Seconds to hold that frame before the exit action (fail defaults to 15 so it can be read). |
 | `exit_action` | finished / fail | `none` (leave the splash up), `exit` (quit), or `fade` (fade out then quit). Per section. |
 | `exit_timeout` | finished / fail | Duration in seconds of the `exit`/`fade`. |
 | `exit_color` | finished / fail | Fade target colour. |
 
+### Template macros
+
+Expanded in any template (`${NAME:-fallback}` is also supported):
+
+| Macro | Where | Value |
+|-------|-------|-------|
+| `${value}` | per-tick | Progress as a `0..1` fraction (becomes a JSON number). |
+| `${percent}` | per-tick | Progress as a `0..100` integer. Put `"${percent}%"` in a separate `text` element to show a readout anywhere — handy when the bar itself is only a pixel or two tall. The finished sequence forces it to `100`. |
+| `${count}` | per-tick | Services advanced so far (N). |
+| `${total}` | per-tick | The denominator (M), so `"${count}/${total}"`. |
+| `${service}` | per-tick | Name of the service that just started. |
+| `${idle}` | fail | Stall time in seconds. |
+
+Every `status_msg` entry shares one global macro set, so any macro works in any
+entry — split the bar, a percent readout and a console line across as many list
+entries as you like.
+
 The templates control every element id, type and colour, so the same bridge
 drives any scene. For anything the templates cannot express, fall back to the
 shell helpers, which can issue arbitrary `splash-ctl` commands.
+
+## Command line
+
+The bridge is normally started as the `splash-progress` procd service and takes
+no runtime arguments. Two informational flags are available:
+
+```sh
+ubus-progress --version    # prints the version (tracks splash-drm), then exits
+ubus-progress --help       # usage, the template macros, and the array form
+```

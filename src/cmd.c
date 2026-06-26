@@ -220,6 +220,7 @@ static int cmd_exit(splash_state_t *st, cJSON *args, int client_idx) {
 			                    ? (parse_color(fade->valuestring) | 0xFF000000u)
 			                    : 0xFF000000u;
 			st->fade_start_ms = now;
+			st->fade_end_ms   = st->exit_at_ms;
 			st->fade_active   = 1;
 			st->needs_render  = 1;
 		}
@@ -306,10 +307,34 @@ static int cmd_ready(splash_state_t *st, cJSON *args, int client_idx) {
  * "clear" is a full reset: every element and the background are dropped,
  * then the backdrop colour is set (defaulting to black). Loaded fonts are
  * kept - they cannot be reloaded over the socket.
+ *
+ * "fade" cross-fades into the cleared scene instead of cutting to it: the old
+ * frame is snapshotted and the elements are dropped immediately (so anything
+ * sent next is built on the fresh scene), then the snapshot fades out over
+ * "timeout" seconds to reveal what is underneath. "fade":true fades to the
+ * clear colour (seamless); "fade":"#rrggbb" fades to that colour. Reuses the
+ * exit-fade machinery (see render.c), minus the exit.
  */
 static int cmd_clear(splash_state_t *st, cJSON *args, int client_idx) {
+	uint32_t bg = get_color(args, "color", 0);
+
+	cJSON *fade = cJSON_GetObjectItem(args, "fade");
+	if (fade && (cJSON_IsTrue(fade) || cJSON_IsString(fade)) &&
+	    fade_capture_front(st) == 0) {
+		int secs = get_int(args, "timeout", 1);
+		if (secs < 1)
+			secs = 1;
+		uint64_t now = now_ms();
+		st->fade_color    = cJSON_IsString(fade)
+		                    ? (parse_color(fade->valuestring) | 0xFF000000u)
+		                    : (bg | 0xFF000000u);
+		st->fade_start_ms = now;
+		st->fade_end_ms   = now + (uint64_t)secs * 1000u;
+		st->fade_active   = 1;
+	}
+
 	clear_all_elements(st);
-	st->bg_color = get_color(args, "color", 0);
+	st->bg_color = bg;
 	st->needs_render = 1;
 	send_response(st, client_idx, create_response("ok", NULL));
 	return 0;
@@ -1056,6 +1081,8 @@ static int cmd_progress(splash_state_t *st, cJSON *args, int client_idx) {
 	pb->value_smooth_ms = get_smooth_ms(args, "smooth",
 	                                    fresh ? 0 : pb->value_smooth_ms);
 	apply_value(args, &pb->value, &pb->value_anim, pb->value_smooth_ms, fresh);
+	pb->remove_at_full = get_bool(args, "remove_at_full",
+	                              fresh ? 0 : pb->remove_at_full);
 	/* `border` is an undocumented CSS-like shorthand for border_width: a
 	 * number, or false (0) / true (1px). The explicit border_width wins when
 	 * both are present. */

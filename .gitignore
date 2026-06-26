@@ -62,6 +62,7 @@ fonts
 
 splash-drm
 splash-ctl
+ubus-progress/ubus-progress
 
 # Personal / reference initramfs trees (kernel firmware + microcode blobs, large;
 # not part of the build — see examples/initramfs-init.sh for the shareable init)

@@ -464,6 +464,7 @@ existing `id` the fields are merged; see
 | `valign` | 0–2 | `1` | Vertical anchor. |
 | `value` | float | `0.0` | Fill level: `0.0` = empty, `1.0` = full. |
 | `smooth` | bool/int | `false` | Animate `value` changes instead of jumping. `true` tweens over 300 ms; a number sets the duration in ms (`0`/`false` = instant). The fill eases (ease-in-out) from its current position to each new `value`; a new `value` mid-tween retargets the running animation rather than restarting it. Ignored on the first `value` and under `indeterminate`. |
+| `remove_at_full` | bool | `false` | Delete the bar automatically once it reaches 100% (`value` ≥ `1.0`). The bar is shown filled for one frame, then removed. With `smooth` it waits for the fill animation to finish first. Default keeps the bar on screen at 100%. Ignored under `indeterminate`. |
 | `style` | int | `0` | Built-in colour theme (0–5). Set to `-1` to use custom colour fields. When a custom colour field is given alongside a style, the bar switches to fully custom colours automatically. |
 | `bg_color` | color | theme | Background track colour. |
 | `bar_color` | color | theme | Fill colour (or first gradient stop). |
@@ -694,7 +695,7 @@ shorthand for a parameter-less action or as an object with an `action`:
 | `exit` | `timeout` (int, default 0), `fade` (bool / color) | Clean shutdown. With `timeout` the daemon keeps rendering for that many seconds first; `fade` fades the screen out over that window. |
 | `suspend` | — | Freeze rendering; the display keeps whatever was last shown. |
 | `resume` | — | Restart rendering after `suspend`. |
-| `clear` | `color` (color) | Remove every element and set the backdrop to `color` (default black). Loaded fonts are kept. |
+| `clear` | `color` (color), `fade` (bool / color), `timeout` (int, default 1) | Remove every element and set the backdrop to `color` (default black). Loaded fonts are kept. With `fade`, the old frame cross-fades out over the freshly cleared scene across `timeout` seconds (`fade":true` fades to the clear colour, `"fade":"#rrggbb"` to that colour); elements sent right after the clear are built underneath and revealed when the fade lifts. |
 | `status` | — | Return the daemon state (see below). |
 | `version` | — | Return the running daemon's version string. |
 | `running` | — | Liveness probe; a reply means the daemon is up (see below). |
